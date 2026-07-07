@@ -1,0 +1,6 @@
+# Python bytecode from the hooks
+__pycache__/
+*.py[cod]
+
+# OS cruft
+.DS_Store

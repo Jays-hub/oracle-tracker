@@ -1,0 +1,42 @@
+# CLAUDE.md — <<PROJECT NAME>>
+
+> This is the project charter: the thin, always-loaded top of the governance tree. Keep it short —
+> everything here is paid for on every turn. Push detail down into `.claude/rules/` (which load only for
+> the paths they match) and into per-component docs. Rename this file to `CLAUDE.md` once filled in.
+
+## What this is
+<<One or two sentences: what the project is and what "winning" means. The single most important line in
+the repo — the thing every build and review is ultimately judged against.>>
+
+## Structure
+<<The durable parts of the system and how they relate. Name the top-level dirs and what each owns. If
+there's a seam/interface/contract between parts, name it and point to its spec — that's usually the
+highest-priority structural law.>>
+
+```
+.
+├── CLAUDE.md              # this file — project charter
+├── .claude/rules/         # always-on rules, path-scoped: 00 process (the build/review law) + your domain rules
+├── .claude/commands/      # the verbs: /session-start /build /review /ship
+├── .claude/agents/        # the cold-context reviewer (add more write-scoped agents as needed)
+├── .claude/hooks/         # enforcement — turns "read-only reviewer" into mechanism
+├── docs/                  # progress_log.md (running log) · build_notes/ · reviews/ · agentic_workflow/ (self-record)
+└── <<your source dirs>>
+```
+
+## Standing orders
+1. **Comprehension/approval does not gate work.** Building is free; the review closes on the **code**.
+   (`.claude/rules/00-process.md`.)
+2. **Name the drift.** Call out any reach for sophistication before the simpler, higher-value step that
+   meets the real acceptance bar exists. Over-engineering is a defect.
+3. **<<DONE-WHEN>>.** "Done" = `<<the project's concrete, measurable acceptance criterion — the bar
+   /build and /review both judge against. State it once, here, precisely.>>` Not a convenient proxy.
+
+## Commands
+- `<<TEST COMMAND>>` — run the full test suite (e.g. `make test`, `pytest`, `npm test`). Referenced by
+  `/session-start`'s drift check and by `/review`.
+- `<<LINT COMMAND>>` — lint / format / type-check.
+
+## Current status
+<<Where the project is right now: what's built, what's in progress, what's next. Keep it current — the
+`/session-start` drift check compares any counts here against reality and flags mismatches.>>
