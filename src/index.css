@@ -125,6 +125,95 @@ body,
   color: var(--muted);
 }
 
+/* Pin editor --------------------------------------------------------------- */
+.pin-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pin-editor__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 1rem;
+}
+
+.pin-editor__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.pin-editor__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.pin-editor__field input,
+.pin-editor__field select,
+.pin-editor__field textarea {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.pin-editor__field textarea {
+  min-height: 140px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.45;
+}
+
+.pin-editor__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.pin-editor button {
+  padding: 9px 12px;
+  border: none;
+  border-radius: 6px;
+  background: #2f6fed;
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.pin-editor button:disabled {
+  background: #b9c3d6;
+  cursor: not-allowed;
+}
+
+.pin-editor__close {
+  background: #64748b;
+}
+
+.pin-editor__hint,
+.pin-editor__coords {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* Unsaved work is the only state in the app a user can lose — say it loudly. */
+.pin-editor__hint--warn {
+  color: #9a5b00;
+  font-weight: 600;
+}
+
+.pin-editor__coords {
+  font-variant-numeric: tabular-nums;
+}
+
 /* Legend ------------------------------------------------------------------- */
 .legend {
   list-style: none;
@@ -172,4 +261,28 @@ body,
   border-radius: 50%;
   border: 2px solid #fff;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+/* The pin currently open in the editor. Ring only — the fill stays the
+   strength color so selection can never be mistaken for a strength. */
+.pin-marker__dot--selected {
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 0 0 4px rgba(47, 111, 237, 0.55);
+}
+
+/* Popup -------------------------------------------------------------------- */
+.popup__notes {
+  display: block;
+  margin-top: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap; /* keep the line breaks the notes were written with */
+  overflow-wrap: anywhere;
+}
+
+.popup__notes--empty {
+  color: var(--muted);
+  font-style: italic;
 }
