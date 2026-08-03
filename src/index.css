@@ -1,0 +1,175 @@
+:root {
+  --sidebar-width: 320px;
+  --ink: #1f2933;
+  --muted: #66707a;
+  --line: #e2e6ea;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--ink);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+}
+
+/* Sidebar ------------------------------------------------------------------ */
+.sidebar {
+  width: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
+  padding: 20px;
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+}
+
+.sidebar__brand {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.sidebar__tagline {
+  margin: 4px 0 20px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.sidebar__count {
+  margin-top: 20px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.banner--error {
+  background: #fdecea;
+  border: 1px solid #f5c6cb;
+  color: #8a1c1c;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  margin-bottom: 16px;
+}
+
+/* Add-pin form ------------------------------------------------------------- */
+.add-pin {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.add-pin__title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.add-pin__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.add-pin__field input,
+.add-pin__field select {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.add-pin button {
+  padding: 9px 12px;
+  border: none;
+  border-radius: 6px;
+  background: #2f6fed;
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.add-pin button:disabled {
+  background: #b9c3d6;
+  cursor: not-allowed;
+}
+
+.add-pin__armed {
+  background: #eef4ff;
+  border: 1px solid #cfe0ff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.85rem;
+}
+
+.add-pin__armed p {
+  margin: 0 0 8px;
+}
+
+.add-pin__armed button {
+  background: #64748b;
+}
+
+.add-pin__hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* Legend ------------------------------------------------------------------- */
+.legend {
+  list-style: none;
+  padding: 0;
+  margin: 20px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.88rem;
+}
+
+.legend__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend__swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+/* Map ---------------------------------------------------------------------- */
+.map-pane {
+  flex: 1;
+  min-width: 0;
+}
+
+.map {
+  height: 100%;
+  width: 100%;
+}
+
+.map--armed {
+  cursor: crosshair;
+}
+
+.pin-marker__dot {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
