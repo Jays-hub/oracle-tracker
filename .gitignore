@@ -1,3 +1,8 @@
+# Node / Vite
+node_modules/
+dist/
+*.local
+
 # Python bytecode from the hooks
 __pycache__/
 *.py[cod]
