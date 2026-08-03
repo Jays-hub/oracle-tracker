@@ -7,6 +7,11 @@ export default defineConfig({
   test: {
     // Domain/storage tests are pure TS with injected fakes — no DOM needed.
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    // `.tsx` is included deliberately: component tests live beside the code and
+    // a glob that silently skipped them would leave the UI guards undefended
+    // while the suite still reported green.
+    include: ['src/**/*.test.{ts,tsx}'],
+    // Only the component tests pay for jsdom; the domain suite stays on node.
+    environmentMatchGlobs: [['src/**/*.test.tsx', 'jsdom']],
   },
 });

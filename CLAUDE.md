@@ -48,8 +48,11 @@ _(These scripts land with the first build unit, which scaffolds the Vite app.)_
 - `npm run lint && npm run typecheck` — ESLint plus `tsc --noEmit` type-check.
 
 ## Current status
-Seeded from agentic-starter on 2026-08-03. Stack decided: React + Vite + TypeScript + Leaflet + OSM
-tiles, `localStorage` persistence, Vitest + ESLint/`tsc`. **No app code yet — units built: 0.**
-**Next (first unit — "Map + colored pins"):** scaffold the Vite app; render a Leaflet map over OSM;
-add-restaurant (name + click-to-place); set lead strength → pin color (green/amber/red); pins persist
-across reload. Notes + editing are a later unit.
+Stack: React + Vite + TypeScript + Leaflet + OSM tiles, `localStorage` persistence, Vitest +
+ESLint/`tsc`. **Units built: 2.** Unit 1 "Map + colored pins" — reviewed, fixed, merged (PR #2).
+Unit 2 "notes + editing per pin" — **built, reviewed, fixes landed**: per-pin notes plus editing of
+notes, name and strength, persisted. Every item on the DONE-WHEN checklist (#3) is met, but "see it at
+a glance" is not fully delivered: the map always opens over a hardcoded NYC center with no
+fit-to-pins, no list and no filter, so leads elsewhere aren't visible until you pan to them.
+**Next:** unit 3 — fit the view to the pins is the strongest candidate (it closes that gap); then
+delete a pin, or filter by lead strength.
