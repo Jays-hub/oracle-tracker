@@ -44,8 +44,15 @@ _REPO_ROOT = os.path.realpath(
 
 # The one artifact each write-scoped agent's own definition grants it (repo-relative).
 # Add a row here for every read-only subagent you create.
+#
+# `[^/]+` (not `[\w.-]+`) on purpose: the unit id flows in from `/review <unit>`
+# unsanitized, and real unit ids contain spaces and punctuation -- this project's
+# own first unit is "Map + colored pins". A stricter class denies the reviewer the
+# ONE write it is granted, which deadlocks the review after it has done all the
+# work. Still one file, still directly under docs/reviews/, since `[^/]+` cannot
+# cross a directory boundary and the path is realpath'd before it is matched.
 _ALLOWED_ARTIFACTS = {
-    "reviewer": (re.compile(r"docs/reviews/[\w.-]+\.md"),),
+    "reviewer": (re.compile(r"docs/reviews/[^/]+\.md"),),
 }
 
 _WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
