@@ -68,9 +68,13 @@ load-bearing one you can't resolve by reading the repo; state the minor ones and
 
 Build with these defaults — honor any that `.claude/rules/` codifies, don't reinvent them:
 
-- **"Done" is the project's real acceptance bar**, not a proxy. `<<STATE THE PROJECT'S DONE-WHEN HERE:
-  the concrete, measurable criterion this project judges success by — e.g. beats baseline X on metric Y;
-  passes acceptance test Z; meets the SLO. Diagnostics that aren't the bar are diagnostics only.>>`
+- **"Done" is the project's real acceptance bar**, not a proxy. The product bar (from `CLAUDE.md`,
+  standing order #3): from a clean checkout, `npm install && npm run dev` serves an app where I can pin
+  a restaurant by name + location, mark its lead strength (strong / weak / failed) and see the pin in
+  the matching color (**strong = green, weak = amber, failed = red**), attach and edit free-form notes
+  per pin, and have every pin — position, strength, notes — persist across a full reload via
+  `localStorage`; tests green, lint/types clean. Each unit is a slice of that bar and is judged against
+  it — not against a convenient proxy. A diagnostic that isn't the bar is a diagnostic only.
 - **Correctness is structural, not hoped-for.** Prevent the defect by construction — validate at
   boundaries, assert invariants, fail loud with named errors rather than silent wrong answers.
 - **Reproducibility:** deterministic where it matters (seed stochastic sources); no hardcoded absolute

@@ -64,9 +64,20 @@ When a comment and the code disagree, the code is the truth and the mismatch is 
 - **Data / boundary integrity.** Null/NaN/inf handled explicitly; types correct at interfaces; the same
   transform applied at train and inference time.
 
-**Domain hazards.** `<<Add the project's own highest-priority structural laws here — the seam/firewall,
-tenant isolation, a safety invariant, a regulatory constraint — each cited to the rule that states it.
-Delete this line once the project's rules exist and this hunt list references them.>>`
+**Domain hazards** (no `.claude/rules/01+` yet — these cite `CLAUDE.md`; graduate any you cite twice
+into a real rule):
+- **Lead-strength → color is a total, fixed mapping** (`CLAUDE.md` standing order #3). Every pin has
+  exactly one strength in {strong, weak, failed}, each rendering as exactly one color
+  (**strong = green, weak = amber, failed = red**). A pin that renders with a default/unknown color, an
+  unmapped strength, or the wrong color for its strength silently misrepresents a lead — treat as a
+  BLOCKER. Verify the mapping directly, don't trust the legend.
+- **Persistence is lossless and durable** (`CLAUDE.md` #3). Everything saved to `localStorage`
+  round-trips exactly (all pins, positions, strengths, and — once built — notes) and survives a full
+  reload. A corrupt or absent store must degrade to empty-but-usable or fail loud with a named error —
+  never crash the map or silently drop pins. Reproduce a reload; don't trust the claim.
+- **Local-first, standalone** (`CLAUDE.md` #2). No backend, no database, no server, no accounts, no
+  external places/geo API — user data lives only in the browser, and there's no coupling to the separate
+  restaurant-development project. A network call for user data (map tiles excepted) is a finding.
 
 **Software engineering:** tests meaningful (would they actually fail on the bug you fear?) not just "it
 ran"; edge cases and error handling (friendly named errors, not a bare crash); structure/style flagged
