@@ -253,6 +253,258 @@ describe('App — a stale tab cannot delete pins', () => {
   });
 });
 
+describe('App — deleting a pin', () => {
+  function deleteFirstMarker() {
+    fireEvent.click(markers()[0]);
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+  }
+
+  // The unit's headline flow: delete requires its own confirmation (a single
+  // click must not be enough), and once confirmed removes the pin from both
+  // the map and localStorage, closing the now-pointless editor.
+  it('removes the pin from the map and the store, and closes the editor', () => {
+    seed([alpha, beta]);
+    render(<App />);
+    expect(markers()).toHaveLength(2);
+
+    fireEvent.click(markers()[0]);
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+    // Arming alone must not delete anything yet.
+    expect(stored()).toHaveLength(2);
+    expect(markers()).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+
+    expect(markers()).toHaveLength(1);
+    expect(stored().map((p) => p.id)).not.toContain('a');
+    expect(stored()).toHaveLength(1);
+    // Nothing left to edit: the sidebar falls back to the add-pin form.
+    expect(screen.getByRole('button', { name: /place on map/i })).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/what happened on the visit/i)).toBeNull();
+  });
+
+  it('does not delete when the confirmation is cancelled', () => {
+    seed([alpha, beta]);
+    render(<App />);
+
+    fireEvent.click(markers()[0]);
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(stored()).toHaveLength(2);
+    expect(markers()).toHaveLength(2);
+    // The editor is still open on the pin that almost got deleted.
+    expect(notesBox().value).toBe(alpha.notes);
+  });
+
+  // "Wants its own confirm/undo story" (docs/roadmap.md) — the other half of
+  // that: a confirmed delete is recoverable in-session via Undo, restoring
+  // the exact pin (id, position, strength, notes) rather than a new one.
+  it('offers an Undo that restores the exact pin, byte-for-byte', () => {
+    seed([alpha, beta]);
+    render(<App />);
+
+    deleteFirstMarker();
+    expect(stored()).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /^undo$/i }));
+
+    expect(markers()).toHaveLength(2);
+    expect(stored()).toEqual(expect.arrayContaining([alpha, beta]));
+    expect(stored()).toHaveLength(2);
+  });
+
+  // F1: `pinToDelete` used to come from `pins` (React state, captured at load
+  // or last save) instead of the same fresh re-read the write uses — so Undo
+  // could restore an older copy of the deleted pin's notes than the one
+  // actually just removed from storage. Reproduces the reviewer's probe: a
+  // concurrent edit to the pin being deleted, then Undo, then assert the
+  // restored notes are the NEWER text, not this tab's stale pre-edit copy.
+  it('undoes onto the record actually in storage at delete time, not a stale copy', () => {
+    seed([alpha, beta]);
+    render(<App />);
+    fireEvent.click(markers()[0]); // opens Alpha, capturing it into `pins` state
+
+    // ...meanwhile, in another tab, someone writes notes on Alpha:
+    const editedElsewhere: Pin = {
+      ...alpha,
+      notes: 'THREE PARAGRAPHS WRITTEN IN ANOTHER TAB.',
+    };
+    seed([editedElsewhere, beta]);
+
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+    expect(stored()).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /^undo$/i }));
+
+    // Undo must restore what was actually just deleted from storage — the
+    // other tab's edited version — not this tab's stale pre-edit copy.
+    expect(stored().find((p) => p.id === 'a')?.notes).toBe(
+      'THREE PARAGRAPHS WRITTEN IN ANOTHER TAB.',
+    );
+  });
+
+  // Same multi-tab discipline as the existing add/edit guards (see "a stale
+  // tab cannot delete pins" above): a delete must act on what's really in
+  // storage right now, not this tab's possibly-stale `pins` state, so a
+  // concurrent write from another tab survives it.
+  it('does not clobber a pin another tab added since this one loaded', () => {
+    seed([alpha]);
+    render(<App />);
+    fireEvent.click(markers()[0]);
+
+    // ...meanwhile, in another tab:
+    const fromOtherTab: Pin = { ...beta, id: 'c', name: 'Added in tab A' };
+    seed([alpha, fromOtherTab]);
+
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+
+    const after = stored();
+    expect(after.map((p) => p.name)).toEqual(['Added in tab A']);
+    expect(after).toHaveLength(1);
+  });
+
+  // The duplicate-id hazard: loadPins treats a store with two pins sharing an
+  // id as corrupt (pinStore.ts), so undo must refuse to write one rather than
+  // resurrect a deleted record on top of an id that's since reappeared —
+  // e.g. another tab importing a backup taken before this delete.
+  it('declines to undo if another pin has since reused the deleted id', () => {
+    seed([alpha, beta]);
+    render(<App />);
+
+    deleteFirstMarker();
+    expect(stored()).toHaveLength(1);
+
+    const revived: Pin = { ...alpha, name: 'Revived Alpha' };
+    seed([...stored(), revived]);
+
+    fireEvent.click(screen.getByRole('button', { name: /^undo$/i }));
+
+    expect(screen.getByRole('alert').textContent).toMatch(/couldn.t undo/i);
+    // The other tab's record must not be clobbered by the stale undo data.
+    expect(stored().find((p) => p.id === 'a')).toEqual(revived);
+    expect(screen.queryByRole('button', { name: /^undo$/i })).toBeNull();
+  });
+
+  // F2: deleteInfo used to be cleared by handleSelectPin, handleMapClick and
+  // handleSaveEdits, wiping the only undo for a destructive action on the
+  // very next click — including a purely read-only one like "did I delete
+  // the right lead?". None of those three actions can make the held pin
+  // stale or collide with it, so Undo must survive all of them.
+  it('keeps the Undo banner through selecting, adding, and editing other pins', () => {
+    seed([alpha, beta]);
+    render(<App />);
+
+    deleteFirstMarker(); // deletes Alpha
+    expect(screen.getByRole('button', { name: /^undo$/i })).toBeTruthy();
+
+    // Selecting the surviving pin is a read.
+    fireEvent.click(markers()[0]); // the only marker left: Beta
+    expect(screen.getByRole('button', { name: /^undo$/i })).toBeTruthy();
+
+    // Editing it doesn't touch Alpha's id.
+    fireEvent.change(notesBox(), { target: { value: 'Edited after the delete.' } });
+    save();
+    expect(screen.getByRole('button', { name: /^undo$/i })).toBeTruthy();
+
+    // Nor does adding a fresh pin — it gets its own new random id.
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }));
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Gamma Diner' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    clickMapAt(30, 40);
+    expect(screen.getByRole('button', { name: /^undo$/i })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /^undo$/i }));
+    expect(stored()).toHaveLength(3); // Beta (edited) + Gamma + restored Alpha
+    expect(stored().map((p) => p.id)).toEqual(expect.arrayContaining(['a', 'b']));
+  });
+
+  // A stale Undo must still not survive something that actually invalidates
+  // it: a second delete replaces the pending record with the newer one — only
+  // the single most recent delete can be undone, never a stack of them.
+  it('replaces the pending Undo when a second pin is deleted', () => {
+    seed([alpha, beta]);
+    render(<App />);
+
+    deleteFirstMarker(); // deletes Alpha
+    deleteFirstMarker(); // deletes Beta, now the only remaining marker
+
+    fireEvent.click(screen.getByRole('button', { name: /^undo$/i }));
+
+    // Beta comes back; Alpha does not — only the most recent delete undoes.
+    expect(stored().map((p) => p.id)).toEqual(['b']);
+  });
+
+  // Import is a real invalidation, unlike select/add/edit above: the
+  // pre-import store — and any pin it held, including one just deleted — is
+  // gone, so an undo against it would be meaningless at best.
+  it('clears the Undo banner when an import replaces the store', async () => {
+    seed([alpha, beta]);
+    render(<App />);
+
+    deleteFirstMarker();
+    expect(screen.getByRole('button', { name: /^undo$/i })).toBeTruthy();
+
+    selectFile(serializePins([beta]));
+    await waitFor(() => screen.getByRole('button', { name: /^replace$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+
+    expect(screen.queryByRole('button', { name: /^undo$/i })).toBeNull();
+  });
+
+  // F4: handleUndoDelete used to call storedPinsForWrite() outside its own
+  // try, so a failed rescue (an unreadable store whose own corrupt-snapshot
+  // also fails) threw uncaught instead of surfacing a banner — the Undo
+  // button stayed on screen doing nothing, forever, with no explanation.
+  it('surfaces a named error instead of throwing when Undo cannot read the store', () => {
+    seed([alpha, beta]);
+    render(<App />);
+    deleteFirstMarker();
+    expect(screen.getByRole('button', { name: /^undo$/i })).toBeTruthy();
+
+    // The store becomes unreadable before Undo is clicked...
+    window.localStorage.setItem(STORAGE_KEY, 'not valid json');
+    // ...and the rescue snapshot that would normally save it aside also fails.
+    const realSetItem = window.localStorage.setItem.bind(window.localStorage);
+    vi.spyOn(window.localStorage, 'setItem').mockImplementation((k, v) => {
+      if (k.startsWith(CORRUPT_BACKUP_PREFIX)) throw new Error('QuotaExceededError');
+      realSetItem(k, v);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^undo$/i }));
+
+    expect(screen.getByRole('alert').textContent).toMatch(/couldn.t restore/i);
+  });
+
+  // F6: a delete attempted on a pin another tab already removed used to
+  // report "it was not removed" — false, since the pin really is gone from
+  // storage — and left a ghost marker on screen that every further delete
+  // attempt on it would just repeat forever.
+  it('fails loud and resyncs when the pin was already deleted elsewhere', () => {
+    seed([alpha, beta]);
+    render(<App />);
+    fireEvent.click(markers()[0]); // opens Alpha
+
+    // ...meanwhile, in another tab, Alpha is deleted:
+    seed([beta]);
+
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+
+    expect(screen.getByRole('alert').textContent).toMatch(/already deleted elsewhere/i);
+    // The ghost marker is gone: this tab's view now matches storage.
+    expect(markers()).toHaveLength(1);
+    expect(stored()).toEqual([beta]);
+    // Nothing left to show for a pin that no longer exists anywhere.
+    expect(screen.getByRole('button', { name: /place on map/i })).toBeTruthy();
+  });
+});
+
 describe('App — a corrupt store is never overwritten unbacked-up', () => {
   // The whole point of failing loud on a corrupt read is undone if the first
   // ordinary action destroys the bytes. Notes are prose: they cannot be

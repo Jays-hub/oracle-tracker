@@ -4,6 +4,7 @@ import {
   createPin,
   updatePin,
   replacePin,
+  removePin,
   InvalidPinError,
   PinNotFoundError,
   type Pin,
@@ -181,5 +182,42 @@ describe('replacePin', () => {
     const orphan: Pin = { ...b, id: 'gone' };
     expect(() => replacePin([a, c], orphan)).toThrow(PinNotFoundError);
     expect(() => replacePin([], a)).toThrow(PinNotFoundError);
+  });
+});
+
+describe('removePin', () => {
+  const a: Pin = { id: 'a', name: 'A', lat: 1, lng: 1, strength: 'strong', notes: '' };
+  const b: Pin = { id: 'b', name: 'B', lat: 2, lng: 2, strength: 'weak', notes: 'b' };
+  const c: Pin = { id: 'c', name: 'C', lat: 3, lng: 3, strength: 'failed', notes: '' };
+
+  // Core correctness: removes exactly the matching pin, leaves the others (and
+  // their order) untouched — hand-checked against the expected list.
+  it('removes exactly the matching pin, leaving the rest in order', () => {
+    expect(removePin([a, b, c], 'b')).toEqual([a, c]);
+  });
+
+  it('does not mutate the input list', () => {
+    const pins = [a, b, c];
+    removePin(pins, 'b');
+    expect(pins).toEqual([a, b, c]);
+  });
+
+  // Reproducibility: removing the same id from the same list twice (as two
+  // independent calls) gives an identical result both times.
+  it('is deterministic', () => {
+    expect(removePin([a, b, c], 'b')).toEqual(removePin([a, b, c], 'b'));
+  });
+
+  // Edge case: removing the only pin leaves an empty list, not undefined/null.
+  it('leaves an empty list when the only pin is removed', () => {
+    expect(removePin([a], 'a')).toEqual([]);
+  });
+
+  // The silent-no-op guard: an unknown id must fail loud, same reasoning as
+  // replacePin — the caller persists the returned list and would otherwise
+  // report a deletion that never happened.
+  it('throws PinNotFoundError when no pin has that id', () => {
+    expect(() => removePin([a, c], 'gone')).toThrow(PinNotFoundError);
+    expect(() => removePin([], 'a')).toThrow(PinNotFoundError);
   });
 });

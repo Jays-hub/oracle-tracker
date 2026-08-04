@@ -9,6 +9,117 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-04 — [reviewed] [fixed] Delete a pin — review closed
+
+[reviewed] Cold-context adversarial review: `docs/reviews/Delete a pin.md` (shasum `53f3d917`).
+**Verdict: No.** `CLAUDE.md` #3's product bar held throughout, but the unit's own contract — Undo
+"restores the exact pin, byte-for-byte" — did not. 2 MAJOR + 4 MINOR + 2 NIT. The reviewer ran the gate
+itself (`npm test` **120 passed**, matching the log) and wrote 9 probe tests plus re-planted 2 of the
+builder's own 5 regressions to verify each finding by running it, not just reading the diff. All 6
+substantive findings (F1–F6) are fixed below; the 2 NITs (button contrast, build-note filename case) are
+deferred, unchanged from the artifact.
+
+[fixed] **MAJOR (F1) — Undo restored this tab's stale copy of the deleted pin, not the record actually
+in storage at delete time.** `handleDeletePin` re-read the store for the *write* (`storedPinsForWrite()`)
+but took `pinToDelete` — the value Undo would later resurrect — from `pins`, React state captured at
+this tab's last load or save. Reproduced by the reviewer: another tab edits the pin's notes, this tab
+deletes it (correctly removing the *current* record), Undo comes back with the pre-edit notes — silent
+prose loss, exactly the failure mode `docs/roadmap.md` Section B calls the worst kind. Fixed by sourcing
+`pinToDelete` from the same freshly re-read list the write uses (`src/App.tsx`, `handleDeletePin`). New
+regression test: `App.test.tsx` — "undoes onto the record actually in storage at delete time, not a
+stale copy" (a concurrent-edit-then-undo scenario the old headline "byte-for-byte" test could not
+detect, per the reviewer's F3).
+
+[fixed] **MAJOR (F2) — the only Undo for a destructive action was destroyed by a read-only action.**
+`setDeleteInfo(null)` fired in `handleSelectPin` (and `handleMapClick`/`handleSaveEdits`), so clicking
+any marker — including checking "did I delete the right one?" — permanently killed the Undo button.
+None of those three actions can make the held pin stale or collide with its id, so nothing was being
+protected. Dropped the clear from all three; it stays only where it's real — a newer delete (which
+naturally supersedes the held pin via the same state write) and an import replace (`src/App.tsx`).
+Old test asserting the opposite ("clears the Undo banner once another action happens") replaced with
+three that assert the corrected contract: it survives selecting/adding/editing, a second delete replaces
+rather than stacks it, and an import replace still clears it.
+
+[fixed] **MINOR (F4) — a failed rescue during Undo threw uncaught instead of surfacing a banner.**
+`handleUndoDelete` called `storedPinsForWrite()` outside its own `try`; when the store is unreadable and
+the corrupt-store snapshot also fails, the exception escaped the click handler — Undo stayed on screen,
+did nothing, forever, no explanation. Moved the call inside `try`, reusing the existing "Couldn't
+restore…" message (`src/App.tsx`). New test: "surfaces a named error instead of throwing when Undo
+cannot read the store."
+
+[fixed] **MINOR (F6) — deleting a pin another tab had already removed reported "it was not removed,"**
+which was false (the pin really was gone from storage), and left a ghost marker that every further
+delete attempt on it would just repeat. `handleDeletePin` now checks for the pin in the freshly re-read
+list before attempting the removal; on a miss it resyncs `pins` to what's actually stored, closes the
+editor, and names the real cause ("it was already deleted elsewhere"). New test: "fails loud and resyncs
+when the pin was already deleted elsewhere."
+
+[decided] **MINOR (F5) — no written acceptance criteria for this unit; the roadmap was stale.**
+`docs/roadmap.md` still listed "Delete a pin" under "Later — not scheduled" with no Done-when, despite
+the build note's claim that one existed. Added a proper "Unit 4 — Delete a pin" section with a Done-when
+written from the reviewer's own corrected contract, removed the "Later" bullet, and updated Section B's
+now-stale premise ("There is no delete yet" → footnoted as historical) plus its "honest prerequisites"
+line, which no longer needs delete now that it exists.
+
+Re-ran the gate: `npm run typecheck` clean · `npm run lint` clean · `npm test` **125 passed** (8 files;
+was 120) · `npm run build` succeeds. **Self-proving — F1, F2, F4, F6 each individually replanted, run,
+restored:** sourcing `pinToDelete` from stale `pins` state fails the new F1 test (and cascades into the
+F6 test, since both paths share the same read); restoring `setDeleteInfo(null)` in `handleSelectPin`
+fails the new "keeps the Undo banner through selecting…" test; moving `storedPinsForWrite()` back outside
+`handleUndoDelete`'s `try` reproduces the reviewer's exact uncaught `PinStoreError` crash, caught by the
+F4 test; removing the not-found guard in `handleDeletePin` fails the F6 test with the old "It was not
+removed" message. Each regression was caught by exactly the test written to guard it, then restored.
+
+**In-browser verification passed** (Google Chrome, dev server): seeded Alpha/Beta, opened Alpha,
+injected a concurrent-tab edit directly into `localStorage` (notes → "THREE PARAGRAPHS WRITTEN IN
+ANOTHER TAB."), deleted Alpha here, clicked Undo — restored notes matched the concurrent edit exactly,
+confirming F1 live. Selected Beta (a read), edited and saved its notes, and added a new pin — the Undo
+banner survived all three (F2), and clicking it afterward restored Alpha alongside Beta's edit and the
+new pin, three pins total in storage. Separately: opened a pin, had "another tab" delete it from
+`localStorage`, then confirmed delete here — got "Couldn't delete that pin: it was already deleted
+elsewhere. Your view has been refreshed.", the ghost marker vanished, and the sidebar count matched
+storage (F6). Console clean throughout. Fixture data cleared from that origin.
+
+Unit 4 ("Delete a pin") is **done and mergeable.**
+
+Next: pick from `docs/roadmap.md`'s "Later" list (filter/search by strength, persist the map view across
+reloads) or scope a new unit.
+
+---
+
+## 2026-08-04 — [built] Delete a pin
+
+[built] Closes the first item on `docs/roadmap.md`'s "Later" list: a lead placed by mistake, duplicated,
+or no longer real had no way off the map short of editing every field into nonsense. `PinEditor` gets a
+**Delete lead** control, gated by a two-step confirm (arm, then confirm — matching the pattern
+`ImportExport`'s destructive Replace already uses). A confirmed delete removes the pin from `pins` state
+and `localStorage` through the same re-read-before-write path add/edit already use, closes the editor,
+and arms an in-session **Undo** banner holding the exact removed pin, so a misclick is recoverable
+without reaching for the whole-store Export/Import backup.
+
+Artifacts: `src/domain/pin.ts` (`removePin`, mirrors `replacePin`'s fail-loud contract) + 5 new tests in
+`src/domain/pin.test.ts`; `src/components/PinEditor.tsx` (`onDelete` prop, confirm-armed delete button)
++ 3 new tests; `src/App.tsx` (`deleteInfo` state, `handleDeletePin`, `handleUndoDelete`, a new
+`role="status"` Undo banner) + 6 new tests in `src/App.test.tsx`; `src/index.css` (delete button states,
+`.banner__undo`). Decision log: `docs/build_notes/delete a pin.md` — this item was a "Later" one-liner
+with no spec'd "Done when," so the log covers how "confirm/undo story" was scoped (in-session,
+single-delete undo; explicitly rejected reusing Section B's whole-store snapshot mechanism as drift for
+a single pin) and the duplicate-id hazard the undo path guards against.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean · `npm test` **120 passed** (8 files; was
+106) · `npm run build` succeeds. **Self-proving — 5 regressions planted, run, restored:** `removePin`'s
+not-found throw removed, delete's multi-tab re-read swapped for stale `pins` state, undo's duplicate-id
+guard removed, the `deleteInfo`-clears-on-add call removed, and PinEditor's confirm gate bypassed —
+each independently caught the test written to guard it, then was restored.
+
+**In-browser verification passed** (Google Chrome, dev server): seeded 2 pins, deleted one through the
+full confirm flow, saw the Undo banner, clicked Undo, and confirmed the restored `localStorage` record
+was byte-identical to the original. Console clean throughout. Full walkthrough in the decision log.
+
+Next: `/review Delete a pin`. Not marked done — the review closes on the code, not this entry.
+
+---
+
 ## 2026-08-04 — [reviewed] [fixed] Unit 3 Section B: export/import JSON — review closed
 
 [reviewed] Cold-context adversarial review: `docs/reviews/Unit 3 Section B - export-import JSON.md`
