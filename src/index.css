@@ -21,6 +21,10 @@ body,
 .app {
   display: flex;
   height: 100vh;
+  /* Same floor as .map-pane's min-width, for the vertical axis: the pane is
+     stretched to this height, and Leaflet subtracts the fit padding from both
+     axes. A viewport shorter than this scrolls rather than losing the pins. */
+  min-height: 240px;
 }
 
 /* Sidebar ------------------------------------------------------------------ */
@@ -242,7 +246,15 @@ body,
 /* Map ---------------------------------------------------------------------- */
 .map-pane {
   flex: 1;
-  min-width: 0;
+  /* Load-bearing, not cosmetic — see mapFit.test.ts, which ties this number to
+     FIT_PADDING_PX. Leaflet fits a box into the container MINUS the padding on
+     both sides; once the pane is narrower than 2 x FIT_PADDING_PX that figure
+     goes negative, the zoom comes out Infinity, maxZoom clamps it to street
+     level, and the map opens on the centre of the box with no pin on screen —
+     silently, which is the bug this pane's whole purpose is to avoid. The floor
+     keeps the pane wide enough that the fit always has room; a window narrower
+     than sidebar + floor scrolls sideways instead. */
+  min-width: 240px;
 }
 
 .map {
@@ -250,7 +262,11 @@ body,
   width: 100%;
 }
 
-.map--armed {
+/* The armed cursor lives on the pane, NOT on .map: react-leaflet freezes
+   MapContainer's className at construction (`const [props] = useState(...)`),
+   the same read-once behaviour the mount-time fit depends on — so a class
+   toggled after mount never reaches the Leaflet container. */
+.map-pane--armed .leaflet-container {
   cursor: crosshair;
 }
 

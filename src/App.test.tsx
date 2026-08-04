@@ -10,7 +10,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
+import { DomUtil } from 'leaflet';
 import { STORAGE_KEY, CORRUPT_BACKUP_PREFIX } from './storage/pinStore';
+import { MAP_VIEWPORT, setMapViewport, resetMapViewport } from './test/setup';
 import type { Pin } from './domain/pin';
 
 // jsdom does not give us a usable localStorage under this Node build, and App
@@ -72,6 +74,33 @@ function storageKeys(): string[] {
 function markers(): HTMLElement[] {
   return Array.from(document.querySelectorAll('.pin-marker'));
 }
+
+/**
+ * Where each pin actually sits on screen, in container pixels.
+ *
+ * Leaflet records the position it gave every element in `_leaflet_pos`
+ * (`DomUtil.getPosition`), which is the pin's coordinate projected into layer
+ * space; adding the map pane's own offset turns that into a point in the
+ * container. So a pin is on screen iff this lands inside MAP_VIEWPORT — which
+ * is the acceptance bar for this unit, read straight off the rendered map
+ * rather than off the props we passed it.
+ */
+function markerPositions(): { x: number; y: number }[] {
+  const pane = document.querySelector('.leaflet-map-pane') as HTMLElement;
+  const paneAt = DomUtil.getPosition(pane);
+  return markers().map((el) => {
+    const at = paneAt.add(DomUtil.getPosition(el));
+    return { x: at.x, y: at.y };
+  });
+}
+
+function clickMapAt(clientX: number, clientY: number) {
+  act(() => {
+    document
+      .querySelector('.leaflet-container')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX, clientY }));
+  });
+}
 function notesBox() {
   return screen.getByPlaceholderText(/what happened on the visit/i) as HTMLTextAreaElement;
 }
@@ -79,8 +108,24 @@ function save() {
   fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
 }
 
+/**
+ * The zoom the map actually opened at, read off the tiles Leaflet requested.
+ * Tile URLs are `.../{z}/{x}/{y}.png`, so the z segment is the rendered zoom —
+ * the map's own answer, not the prop we handed it.
+ */
+function renderedZoom(): number {
+  const tile = document.querySelector('img.leaflet-tile') as HTMLImageElement | null;
+  if (!tile) throw new Error('no tile rendered');
+  const z = tile.src.match(/\/(\d+)\/\d+\/\d+\.png/)?.[1];
+  if (z === undefined) throw new Error(`unrecognised tile url: ${tile.src}`);
+  return Number(z);
+}
+
 beforeEach(() => window.localStorage.clear());
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetMapViewport();
+});
 
 describe('App — notes survive a reload', () => {
   // The unit's acceptance bar, end to end through the real UI: write a note on
@@ -181,11 +226,7 @@ describe('App — a stale tab cannot delete pins', () => {
       target: { value: 'Third Place' },
     });
     fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
-    act(() => {
-      document
-        .querySelector('.leaflet-container')
-        ?.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 30, clientY: 40 }));
-    });
+    clickMapAt(30, 40);
 
     const after = stored();
     expect(after.map((p) => p.name)).toContain('Added in tab A');
@@ -216,13 +257,182 @@ describe('App — a corrupt store is never overwritten unbacked-up', () => {
       target: { value: 'Fresh Start' },
     });
     fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
-    act(() => {
-      document
-        .querySelector('.leaflet-container')
-        ?.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 30, clientY: 40 }));
-    });
+    clickMapAt(30, 40);
 
     expect(stored().map((p) => p.name)).toEqual(['Fresh Start']);
     expect(window.localStorage.getItem(backupKeys[0])).toBe(raw); // still recoverable
+  });
+});
+
+describe('App — arming the map is visible on the map', () => {
+  // "Place on map" changes what the next click does, so something has to say
+  // so where the click will happen. The class used to live on MapContainer,
+  // which freezes className in a useState initialiser at construction — the
+  // same read-once behaviour the mount-time fit relies on — so it was
+  // evaluated once with armed=false and the crosshair never appeared.
+  it('marks the map pane armed so the cursor changes, and unmarks it on cancel', () => {
+    seed([alpha]);
+    render(<App />);
+    const pane = document.querySelector('.map-pane') as HTMLElement;
+    expect(pane.className).not.toContain('map-pane--armed');
+
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Fourth Place' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    expect(pane.className).toContain('map-pane--armed');
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(pane.className).not.toContain('map-pane--armed');
+  });
+});
+
+describe('App — the map opens on the pins', () => {
+  // Leads nowhere near the hardcoded default view. Before this unit these
+  // rendered thousands of kilometres off screen: the pins existed, the map
+  // opened over Manhattan, and nothing was visible until you found them by
+  // panning — which is exactly what "see it all at a glance" rules out.
+  const lisbon: Pin = {
+    id: 'l',
+    name: 'Cervejaria Ramiro',
+    lat: 38.7223,
+    lng: -9.1393,
+    strength: 'strong',
+    notes: 'Great sardines.',
+  };
+  const porto: Pin = {
+    id: 'p',
+    name: 'Cantina 32',
+    lat: 41.1456,
+    lng: -8.6108,
+    strength: 'weak',
+    notes: '',
+  };
+
+  /**
+   * A literal, deliberately NOT `FIT_PADDING_PX`.
+   *
+   * Importing the constant that drives the fit and asserting the view against
+   * it is circular: change the padding and the expectation moves with it, so
+   * the assertion can never fail on the thing it exists to protect. This number
+   * is the independent bar — the marker dot is 22px centred on its coordinate,
+   * so 11 is where it starts being clipped, and the slack is so an edge pin
+   * reads as a pin rather than something pressed into the frame.
+   */
+  const MIN_EDGE_MARGIN_PX = 24;
+
+  function expectOnScreen(at: { x: number; y: number }[], margin = 0) {
+    for (const { x, y } of at) {
+      expect(x).toBeGreaterThanOrEqual(margin);
+      expect(x).toBeLessThanOrEqual(MAP_VIEWPORT.width - margin);
+      expect(y).toBeGreaterThanOrEqual(margin);
+      expect(y).toBeLessThanOrEqual(MAP_VIEWPORT.height - margin);
+    }
+  }
+
+  it('fits every pin into the viewport, padded away from the edges', () => {
+    seed([lisbon, porto]);
+    render(<App />);
+
+    const at = markerPositions();
+    expect(at).toHaveLength(2);
+    // The padding is the difference between "technically on screen" and a pin
+    // half-clipped by the frame with nowhere to open its popup.
+    expectOnScreen(at, MIN_EDGE_MARGIN_PX);
+    // ...and it really did fit the box rather than open at some default: two
+    // cities 270km apart do not fit at street zoom.
+    expect(renderedZoom()).toBeLessThan(15);
+  });
+
+  /**
+   * The fit is a function of the container's pixel size — the padding is
+   * subtracted from it — so a suite that only ever saw one comfortable viewport
+   * could not see the boundary. Below `2 x FIT_PADDING_PX` Leaflet's fit goes
+   * negative, the zoom comes out Infinity, maxZoom clamps it to street level,
+   * and the map opens on the centre of the box with NO pin on screen, silently.
+   * `.map-pane`'s min-width / `.app`'s min-height are what put that out of
+   * reach (tied to the padding in mapFit.test.ts); this runs the real fit at
+   * that floor and checks the pins survive it.
+   */
+  it('still fits the pins at the smallest pane the layout allows', () => {
+    setMapViewport(240, 240);
+    seed([lisbon, porto]);
+    render(<App />);
+
+    const at = markerPositions();
+    expect(at).toHaveLength(2);
+    expectOnScreen(at); // on screen at all is the bar at this size
+  });
+
+  it('centres on a single pin instead of fitting a box with no extent', () => {
+    seed([lisbon]);
+    render(<App />);
+
+    const [at] = markerPositions();
+    // A one-point fit would have zoomed to the tile maximum; a centre view puts
+    // the pin in the middle of the viewport, which is hand-checkable.
+    expect(at.x).toBeCloseTo(MAP_VIEWPORT.width / 2, 0);
+    expect(at.y).toBeCloseTo(MAP_VIEWPORT.height / 2, 0);
+    // Street level, read off the map: close enough to read the block.
+    expect(renderedZoom()).toBe(15);
+  });
+
+  it('keeps the default view when there is nothing to fit', () => {
+    seed([]);
+    render(<App />);
+
+    // With no pins there is nothing to read off the map, so ask it where a
+    // click lands: still lower Manhattan, the view unit 1 shipped.
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'First Lead' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    clickMapAt(400, 300); // the centre of the viewport
+
+    const [placed] = stored();
+    expect(placed.lat).toBeCloseTo(40.7128, 1);
+    expect(placed.lng).toBeCloseTo(-74.006, 1);
+    expect(renderedZoom()).toBe(12); // ...at the zoom unit 1 shipped, too
+  });
+
+  // The other half of the bar: fit ON MOUNT ONLY. A map that re-fits whenever
+  // the pins change would jump mid-edit, and placing a lead in another city
+  // would rip the view away from the one you were writing notes on.
+  it('never moves the map again once it has opened', () => {
+    seed([lisbon, porto]);
+    render(<App />);
+    const before = markerPositions();
+    expect(before).toHaveLength(2);
+
+    // (1) Saving an edit must not move it.
+    fireEvent.click(markers()[0]);
+    fireEvent.change(notesBox(), { target: { value: 'Revisit in June.' } });
+    save();
+    expect(markerPositions()).toEqual(before);
+
+    // (2) Nor may the map move when the pin list grows to somewhere far away:
+    // another tab adds a lead in Reykjavík, the next save picks it up through
+    // the read-modify-write, and a map that re-fits would leap 2,000km north
+    // out of the notes being written. The new pin being off screen is correct
+    // — it wasn't there when the view was chosen.
+    seed([lisbon, porto, { ...porto, id: 'r', name: 'Reykjavík lead', lat: 64.1466, lng: -21.9426 }]);
+    fireEvent.change(notesBox(), { target: { value: 'Revisit in June. Ask for Ana.' } });
+    save();
+    expect(markers()).toHaveLength(3);
+    expect(markerPositions()).toEqual(expect.arrayContaining(before));
+
+    // (3) Nor may placing a new lead re-fit the map to include it.
+    // Exact name: Leaflet's own popup close button is "Close popup".
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Third Lead' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    clickMapAt(60, 80);
+
+    expect(markers()).toHaveLength(4);
+    // Order-independent: the two original pins are pixel-for-pixel where they
+    // were, whatever order Leaflet keeps its markers in.
+    expect(markerPositions()).toEqual(expect.arrayContaining(before));
   });
 });
