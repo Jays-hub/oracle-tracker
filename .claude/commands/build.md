@@ -69,7 +69,7 @@ load-bearing one you can't resolve by reading the repo; state the minor ones and
 Build with these defaults — honor any that `.claude/rules/` codifies, don't reinvent them:
 
 - **"Done" is the project's real acceptance bar**, not a proxy. The product bar (from `CLAUDE.md`,
-  standing order #3): from a clean checkout, `npm install && npm run dev` serves an app where I can pin
+  standing order #3): from a clean checkout, `npm ci && npm run dev` serves an app where I can pin
   a restaurant by name + location, mark its lead strength (strong / weak / failed) and see the pin in
   the matching color (**strong = green, weak = amber, failed = red**), attach and edit free-form notes
   per pin, and have every pin — position, strength, notes — persist across a full reload via
