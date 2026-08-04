@@ -23,7 +23,7 @@ map tiles are the only network dependency.
 ├── .claude/commands/      # the verbs: /session-start /build /review /ship
 ├── .claude/agents/        # the cold-context reviewer (add more write-scoped agents as needed)
 ├── .claude/hooks/         # enforcement — turns "read-only reviewer" into mechanism
-├── docs/                  # progress_log.md (running log) · build_notes/ · reviews/ · agentic_workflow/ (self-record)
+├── docs/                  # roadmap.md (specs for planned units) · progress_log.md (running log) · build_notes/ · reviews/ · agentic_workflow/ (self-record)
 └── src/                   # the app: Leaflet map, pin model + lead-strength colors, localStorage store
 ```
 
@@ -54,5 +54,5 @@ Unit 2 "notes + editing per pin" — **built, reviewed, fixes landed**: per-pin 
 notes, name and strength, persisted. Every item on the DONE-WHEN checklist (#3) is met, but "see it at
 a glance" is not fully delivered: the map always opens over a hardcoded NYC center with no
 fit-to-pins, no list and no filter, so leads elsewhere aren't visible until you pan to them.
-**Next:** unit 3 — fit the view to the pins is the strongest candidate (it closes that gap); then
-delete a pin, or filter by lead strength.
+**Next:** unit 3 — "See it all, and keep it": **(A)** fit the map to the pins, **(B)** export/import
+JSON so the data can leave one browser. Spec: `docs/roadmap.md`.
