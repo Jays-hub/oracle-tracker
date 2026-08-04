@@ -63,6 +63,16 @@ body,
   margin-bottom: 16px;
 }
 
+.banner--info {
+  background: #eef4ff;
+  border: 1px solid #cfe0ff;
+  color: #1f4b8f;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  margin-bottom: 16px;
+}
+
 /* Add-pin form ------------------------------------------------------------- */
 .add-pin {
   display: flex;
@@ -216,6 +226,80 @@ body,
 
 .pin-editor__coords {
   font-variant-numeric: tabular-nums;
+}
+
+/* Import / export ------------------------------------------------------------ */
+.import-export {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.import-export__title {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.import-export__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.import-export button {
+  padding: 9px 12px;
+  border: none;
+  border-radius: 6px;
+  background: #2f6fed;
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+/* `.import-export button` is a class+element selector (specificity 0,1,1),
+   which beats a single class alone (0,1,0) — a plain `.import-export__cancel`
+   rule here would silently lose to the blue default no matter its position
+   in the file (verified in Chrome: both buttons rendered blue). Matching its
+   specificity with `button.` is what actually wins the cascade. */
+.import-export button.import-export__cancel {
+  background: #64748b;
+}
+
+/* Replace is destructive (a confirmed whole-store replace) and used to be
+   styled identically to Export; a mis-click had no visual warning beyond the
+   confirmation's prose. Same red as a failed-lead pin, for the same reason:
+   it's the color this app already uses to mean "this ends badly if wrong". */
+.import-export button.import-export__replace {
+  background: #d64545;
+}
+
+.import-export__file {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.import-export__file input {
+  font-size: 0.82rem;
+}
+
+.import-export__error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #8a1c1c;
+}
+
+.import-export--confirm p {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  color: var(--ink);
 }
 
 /* Legend ------------------------------------------------------------------- */

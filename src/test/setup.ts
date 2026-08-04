@@ -52,3 +52,18 @@ if (typeof HTMLElement !== 'undefined') {
     });
   }
 }
+
+/**
+ * jsdom does not implement `URL.createObjectURL` / `revokeObjectURL` (the
+ * Export-as-JSON download depends on them) even though it does implement
+ * Blob — so without this, every component test that renders the sidebar
+ * would throw the moment Export was clicked, regardless of whether the
+ * export logic itself is correct. The placeholder URL is never dereferenced
+ * by jsdom (there is no navigation), so an opaque string is enough; tests
+ * that need the actual content spy on `createObjectURL` to capture the Blob.
+ */
+if (typeof URL !== 'undefined' && typeof URL.createObjectURL !== 'function') {
+  let counter = 0;
+  URL.createObjectURL = () => `blob:mock-${++counter}`;
+  URL.revokeObjectURL = () => {};
+}

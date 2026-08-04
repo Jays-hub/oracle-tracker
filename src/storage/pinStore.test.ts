@@ -4,8 +4,11 @@ import {
   savePins,
   serializePins,
   backupCorruptStore,
+  backupBeforeImport,
   STORAGE_KEY,
   CORRUPT_BACKUP_PREFIX,
+  IMPORT_BACKUP_PREFIX,
+  MAX_IMPORT_BACKUPS,
   PinStoreError,
   type StorageLike,
 } from './pinStore';
@@ -22,6 +25,13 @@ function fakeStorage(
     setItem: (k, v) => {
       data.set(k, v);
     },
+    removeItem: (k) => {
+      data.delete(k);
+    },
+    get length() {
+      return data.size;
+    },
+    key: (i) => Array.from(data.keys())[i] ?? null,
   };
 }
 
@@ -231,5 +241,83 @@ describe('backupCorruptStore', () => {
       throw new Error('QuotaExceededError');
     };
     expect(() => backupCorruptStore(s, () => 0)).toThrow(PinStoreError);
+  });
+
+  // F3: the copy-failure message used to say "unreadable saved data" even
+  // when the data being copied (an import's pre-replace snapshot) was fine —
+  // the only thing that failed was the copy. The message must name neither
+  // caller, since it's shown to the user verbatim by both.
+  it('describes a failed copy without claiming the source data is unreadable', () => {
+    const s = fakeStorage(raw);
+    s.setItem = () => {
+      throw new Error('QuotaExceededError');
+    };
+    let message = '';
+    try {
+      backupCorruptStore(s, () => 0);
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e);
+    }
+    expect(message).toContain('could not copy the saved data aside');
+    expect(message).not.toMatch(/unreadable/);
+  });
+});
+
+describe('backupBeforeImport', () => {
+  const raw = serializePins(pins);
+
+  // Same shape as backupCorruptStore, but under its own prefix — these bytes
+  // are ordinarily perfectly good, so they must never be filed under a key
+  // that says "corrupt" (F5).
+  it('copies the raw bytes to a timestamped IMPORT_BACKUP_PREFIX key', () => {
+    const s = fakeStorage(raw);
+    const key = backupBeforeImport(s, () => 0);
+    expect(key).toBe(`${IMPORT_BACKUP_PREFIX}1970-01-01T00:00:00.000Z`);
+    expect(s.data.get(key as string)).toBe(raw);
+    expect(key).not.toMatch(CORRUPT_BACKUP_PREFIX);
+  });
+
+  it('returns null when there is nothing stored to back up', () => {
+    expect(backupBeforeImport(fakeStorage(), () => 0)).toBeNull();
+  });
+
+  it('throws PinStoreError when the copy cannot be written', () => {
+    const s = fakeStorage(raw);
+    s.setItem = () => {
+      throw new Error('QuotaExceededError');
+    };
+    expect(() => backupBeforeImport(s, () => 0)).toThrow(PinStoreError);
+  });
+
+  // F4: without a cap, a user who restores backups regularly walks the store
+  // toward its quota one full copy at a time, with no way in the app to
+  // remove one. Six imports must leave at most MAX_IMPORT_BACKUPS snapshots,
+  // and it must be the OLDEST ones that get pruned, not an arbitrary set.
+  it('prunes to the most recent MAX_IMPORT_BACKUPS snapshots, oldest first', () => {
+    const s = fakeStorage(raw);
+    const timestamps = Array.from({ length: MAX_IMPORT_BACKUPS + 1 }, (_, i) => i * 1000);
+    for (const t of timestamps) {
+      backupBeforeImport(s, () => t);
+    }
+
+    const importKeys = Array.from(s.data.keys())
+      .filter((k) => k.startsWith(IMPORT_BACKUP_PREFIX))
+      .sort();
+    expect(importKeys).toHaveLength(MAX_IMPORT_BACKUPS);
+    // The very first snapshot (t=0) is the one that should have been pruned.
+    expect(importKeys[0]).not.toContain('1970-01-01T00:00:00.000Z');
+    expect(s.data.get(STORAGE_KEY)).toBe(raw); // the live store is never touched by pruning
+  });
+
+  it('does not prune backupCorruptStore snapshots', () => {
+    const s = fakeStorage(raw);
+    backupCorruptStore(s, () => 0);
+    for (let t = 1; t <= MAX_IMPORT_BACKUPS + 1; t++) {
+      backupBeforeImport(s, () => t);
+    }
+    const corruptKeys = Array.from(s.data.keys()).filter((k) =>
+      k.startsWith(CORRUPT_BACKUP_PREFIX),
+    );
+    expect(corruptKeys).toHaveLength(1);
   });
 });

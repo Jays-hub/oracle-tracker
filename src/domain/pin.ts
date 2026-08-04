@@ -29,6 +29,11 @@ function isFiniteNumber(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
+/** "lead" or "leads" for `n` — shared so every count in the UI agrees. */
+export function leadNoun(n: number): 'lead' | 'leads' {
+  return n === 1 ? 'lead' : 'leads';
+}
+
 /**
  * Validate an untrusted value (e.g. a JSON-parsed record from storage) into a
  * Pin, or throw InvalidPinError. This is the boundary that keeps corrupt data

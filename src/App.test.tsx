@@ -8,10 +8,15 @@
  * That exercises Leaflet -> eventHandlers.click -> handleSelectPin, i.e. the
  * chain a user actually triggers.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, act } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render, screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react';
 import { DomUtil } from 'leaflet';
-import { STORAGE_KEY, CORRUPT_BACKUP_PREFIX } from './storage/pinStore';
+import {
+  STORAGE_KEY,
+  CORRUPT_BACKUP_PREFIX,
+  IMPORT_BACKUP_PREFIX,
+  serializePins,
+} from './storage/pinStore';
 import { MAP_VIEWPORT, setMapViewport, resetMapViewport } from './test/setup';
 import type { Pin } from './domain/pin';
 
@@ -107,6 +112,13 @@ function notesBox() {
 function save() {
   fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
 }
+function fileInput(): HTMLInputElement {
+  return document.querySelector('input[type="file"]') as HTMLInputElement;
+}
+function selectFile(contents: string, name = 'leads.json') {
+  const file = new File([contents], name, { type: 'application/json' });
+  fireEvent.change(fileInput(), { target: { files: [file] } });
+}
 
 /**
  * The zoom the map actually opened at, read off the tiles Leaflet requested.
@@ -125,6 +137,12 @@ beforeEach(() => window.localStorage.clear());
 afterEach(() => {
   cleanup();
   resetMapViewport();
+  // Belt-and-suspenders for the test that mocks `window.localStorage.setItem`
+  // (F8's "clears a previous success banner" test): if that test ever fails
+  // BEFORE reaching its own `vi.restoreAllMocks()`, the mock would otherwise
+  // leak into every later test in this file, since `beforeEach` only clears
+  // localStorage's contents, not mocks applied to its methods.
+  vi.restoreAllMocks();
 });
 
 describe('App — notes survive a reload', () => {
@@ -434,5 +452,234 @@ describe('App — the map opens on the pins', () => {
     // Order-independent: the two original pins are pixel-for-pixel where they
     // were, whatever order Leaflet keeps its markers in.
     expect(markerPositions()).toEqual(expect.arrayContaining(before));
+  });
+});
+
+describe('App — export/import replaces the whole store', () => {
+  const gamma: Pin = {
+    id: 'g',
+    name: 'Gamma Bistro',
+    lat: 41.1456,
+    lng: -8.6108,
+    strength: 'weak',
+    notes: 'From the imported file.',
+  };
+  const delta: Pin = {
+    id: 'd',
+    name: 'Delta Diner',
+    lat: 38.7223,
+    lng: -9.1393,
+    strength: 'failed',
+    notes: '',
+  };
+
+  // The unit's headline flow, end to end: pick a file, see the counts, confirm,
+  // and the store — not just the screen — ends up holding exactly the file.
+  it('replaces the store and the map with the confirmed import, and snapshots the old data', async () => {
+    seed([alpha, beta]);
+    render(<App />);
+    expect(markers()).toHaveLength(2);
+
+    selectFile(serializePins([gamma, delta]), 'backup.json');
+    await waitFor(() =>
+      expect(screen.getByText(/replace 2 saved leads with the 2 leads/i)).toBeTruthy(),
+    );
+    expect(screen.getByText(/backup\.json/)).toBeTruthy();
+
+    // Nothing committed yet — picking and even seeing the confirmation must
+    // not touch the store.
+    expect(stored()).toEqual([alpha, beta]);
+
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+
+    // The store is what the file said, not a merge of old and new.
+    expect(stored()).toEqual([gamma, delta]);
+    expect(markers()).toHaveLength(2);
+
+    // F1: the imported pins must be ON SCREEN without a reload — before the
+    // fix, `initialView` stayed parked on the pre-import pins (alpha/beta,
+    // ~NYC) and this import of Portuguese leads left every restored marker
+    // thousands of pixels outside the viewport despite existing in the DOM.
+    expect(
+      markerPositions().every(
+        ({ x, y }) => x >= 0 && x <= MAP_VIEWPORT.width && y >= 0 && y <= MAP_VIEWPORT.height,
+      ),
+    ).toBe(true);
+
+    // The pre-import data must be recoverable, not merely gone — under its
+    // own prefix, never CORRUPT_BACKUP_PREFIX: these bytes aren't corrupt.
+    const backupKeys = storageKeys().filter((k) => k.startsWith(IMPORT_BACKUP_PREFIX));
+    expect(backupKeys).toHaveLength(1);
+    expect(storageKeys().some((k) => k.startsWith(CORRUPT_BACKUP_PREFIX))).toBe(false);
+    expect(JSON.parse(window.localStorage.getItem(backupKeys[0]) as string)).toEqual([
+      alpha,
+      beta,
+    ]);
+    expect(screen.getByRole('status').textContent).toContain(backupKeys[0]);
+
+    // The rendered markers really are the imported pins, not the pre-import
+    // ones — click one and read its name back off the editor it opens.
+    fireEvent.click(markers()[0]);
+    const openedName = notesBox().closest('form')?.querySelector(
+      'input[type="text"]',
+    ) as HTMLInputElement;
+    expect(['Gamma Bistro', 'Delta Diner']).toContain(openedName.value);
+  });
+
+  // F2: the confirmation and the post-import banner must name what's really
+  // in storage, not this tab's `pins` state — reproduces the reviewer's
+  // multi-tab probe: another tab wrote a third pin after this tab loaded.
+  it('counts the confirmation and the banner from storage, not from this tab’s stale pins', async () => {
+    seed([alpha]);
+    render(<App />);
+
+    // ...meanwhile, in another tab:
+    seed([alpha, beta, { ...beta, id: 'c', name: 'Added elsewhere' }]);
+
+    selectFile(serializePins([gamma]), 'backup.json');
+    await waitFor(() =>
+      expect(screen.getByText(/replace 3 saved leads with the 1 lead/i)).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+
+    expect(stored()).toEqual([gamma]); // the write really did replace all 3, not 1
+    expect(screen.getByRole('status').textContent).toMatch(/replacing 3 previously saved/i);
+  });
+
+  // F8: a success banner from an earlier import must not linger, contradicting
+  // a later import that actually failed.
+  it('clears a previous success banner when a later import fails', async () => {
+    seed([alpha]);
+    render(<App />);
+
+    selectFile(serializePins([gamma]), 'ok.json');
+    await waitFor(() => screen.getByRole('button', { name: /^replace$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+    expect(screen.getByRole('status').textContent).toMatch(/imported 1 lead/i);
+
+    const realSetItem = window.localStorage.setItem.bind(window.localStorage);
+    vi.spyOn(window.localStorage, 'setItem').mockImplementation((k, v) => {
+      if (k === STORAGE_KEY) throw new Error('QuotaExceededError');
+      realSetItem(k, v);
+    });
+
+    selectFile(serializePins([delta]), 'fails.json');
+    await waitFor(() => screen.getByRole('button', { name: /^replace$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toMatch(/couldn.t import/i);
+  });
+
+  // F9: an armed placement left over from before the import must not survive
+  // it — otherwise the first click on the freshly restored map silently adds
+  // a pin the user never meant to place there.
+  it('disarms a pending placement on import, so the next click adds nothing', async () => {
+    seed([alpha]);
+    render(<App />);
+
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Half-typed lead' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    expect(document.querySelector('.map-pane')?.className).toContain('map-pane--armed');
+
+    selectFile(serializePins([gamma]), 'backup.json');
+    await waitFor(() => screen.getByRole('button', { name: /^replace$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+
+    expect(document.querySelector('.map-pane')?.className).not.toContain('map-pane--armed');
+
+    clickMapAt(30, 40);
+
+    expect(stored()).toEqual([gamma]); // no phantom "Half-typed lead" pin
+  });
+
+  it('does not change the store when the pending import is cancelled', async () => {
+    seed([alpha, beta]);
+    render(<App />);
+
+    selectFile(serializePins([gamma]));
+    await waitFor(() => screen.getByRole('button', { name: /cancel/i }));
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    expect(stored()).toEqual([alpha, beta]);
+    expect(markers()).toHaveLength(2);
+    expect(storageKeys().some((k) => k.startsWith(CORRUPT_BACKUP_PREFIX))).toBe(false);
+  });
+
+  // A bad file must reject outright: no confirmation offered, store untouched.
+  it('rejects an invalid file before any confirmation, leaving the store untouched', async () => {
+    seed([alpha]);
+    render(<App />);
+
+    selectFile(JSON.stringify([{ id: 'x', name: 'y', lat: 0, lng: 0, strength: 'lukewarm' }]));
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toMatch(/invalid pin/i),
+    );
+    expect(screen.queryByRole('button', { name: /^replace$/i })).toBeNull();
+    expect(stored()).toEqual([alpha]);
+  });
+
+  // An import can silently orphan whatever pin was open in the editor — the
+  // replaced set may not contain it, or may contain a same-id record with
+  // different data. The editor must not keep showing it as if nothing changed.
+  it('closes an open editor on import, rather than editing a lead that may no longer match', async () => {
+    seed([alpha, beta]);
+    render(<App />);
+    fireEvent.click(markers()[0]);
+    expect(notesBox()).toBeTruthy();
+
+    selectFile(serializePins([gamma, delta]));
+    await waitFor(() => screen.getByRole('button', { name: /^replace$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+
+    expect(screen.queryByPlaceholderText(/what happened on the visit/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /place on map/i })).toBeTruthy();
+  });
+
+  // The sharper version of the same guard: the imported file reuses the OPEN
+  // pin's id but with different data (a plausible restore-from-backup shape).
+  // PinEditor is keyed by `pin.id`, so on a same-id swap React would NOT
+  // remount it if selection weren't explicitly cleared — the sidebar would
+  // keep showing whatever the editor's own state already held, stale, while
+  // the store underneath had moved on to different data under that id.
+  it('closes the editor even when the imported file reuses the open pin’s id with different data', async () => {
+    seed([alpha]);
+    render(<App />);
+    fireEvent.click(markers()[0]);
+    expect(notesBox().value).toBe(alpha.notes);
+
+    const restored: Pin = { ...alpha, name: 'Restored from backup', notes: 'From backup.' };
+    selectFile(serializePins([restored]));
+    await waitFor(() => screen.getByRole('button', { name: /^replace$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+
+    expect(screen.queryByPlaceholderText(/what happened on the visit/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /place on map/i })).toBeTruthy();
+  });
+
+  // Export is read-only and must reflect what's actually in the store, not a
+  // stale snapshot from first render — added here (rather than only at the
+  // component level) because App is what supplies the `pins` prop.
+  it('exports exactly the pins currently on the map', async () => {
+    seed([alpha]);
+    render(<App />);
+
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Fresh Lead' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    clickMapAt(30, 40);
+    expect(markers()).toHaveLength(2);
+
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL');
+    fireEvent.click(screen.getByRole('button', { name: /export as json/i }));
+
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    await expect(blob.text()).resolves.toBe(serializePins(stored()));
+    createObjectURL.mockRestore();
   });
 });

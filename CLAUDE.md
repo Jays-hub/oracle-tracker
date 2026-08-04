@@ -49,10 +49,12 @@ _(These scripts land with the first build unit, which scaffolds the Vite app.)_
 
 ## Current status
 Stack: React + Vite + TypeScript + Leaflet + OSM tiles, `localStorage` persistence, Vitest +
-ESLint/`tsc`. **Units built: 2.** Unit 1 "Map + colored pins" — reviewed, fixed, merged (PR #2).
-Unit 2 "notes + editing per pin" — **built, reviewed, fixes landed**: per-pin notes plus editing of
-notes, name and strength, persisted. Every item on the DONE-WHEN checklist (#3) is met, but "see it at
-a glance" is not fully delivered: the map always opens over a hardcoded NYC center with no
-fit-to-pins, no list and no filter, so leads elsewhere aren't visible until you pan to them.
-**Next:** unit 3 — "See it all, and keep it": **(A)** fit the map to the pins, **(B)** export/import
-JSON so the data can leave one browser. Spec: `docs/roadmap.md`.
+ESLint/`tsc`. **Units built: 3.** Unit 1 "Map + colored pins" and Unit 2 "notes + editing per pin" —
+reviewed, fixed, merged. Unit 3 "See it all, and keep it" — **built, reviewed, fixes landed**: (A) the
+map fits itself to every saved pin on load instead of opening over a hardcoded NYC center; (B) a
+sidebar Backup control exports every pin to a dated JSON file and imports one back as a confirmed
+whole-store replace, snapshotting the pre-import data first. Every item on the DONE-WHEN checklist (#3)
+is met and "see it at a glance" now holds for leads anywhere, including right after a restore (a
+confirmed import re-fits the map immediately, no reload needed).
+**Next:** pick from `docs/roadmap.md`'s "Later" list (delete a pin, filter/search by strength, persist
+the map view across reloads) or scope a new unit.

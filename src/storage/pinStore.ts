@@ -2,10 +2,18 @@ import { parsePin, type Pin } from '../domain/pin';
 
 export const STORAGE_KEY = 'restaurant-map.pins.v1';
 
-/** The slice of the Storage API we use — injectable so it can be faked in tests. */
+/**
+ * The slice of the Storage API we use — injectable so it can be faked in
+ * tests. `removeItem`/`length`/`key` exist so a snapshot prefix can be
+ * enumerated and pruned (see `pruneSnapshots`); `window.localStorage` already
+ * satisfies all five as the real `Storage` type.
+ */
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+  readonly length: number;
+  key(index: number): string | null;
 }
 
 export class PinStoreError extends Error {
@@ -65,30 +73,97 @@ export function loadPins(storage: StorageLike): Pin[] {
 export const CORRUPT_BACKUP_PREFIX = `${STORAGE_KEY}.corrupt-`;
 
 /**
- * Copy unreadable bytes aside under a timestamped key, so the next successful
- * save cannot destroy them. Returns the backup key, or null when there was
- * nothing stored to back up.
+ * Key prefix for the pre-replace snapshot `importPins` takes. A separate
+ * prefix from `CORRUPT_BACKUP_PREFIX` on purpose: the bytes this copies are
+ * ordinarily perfectly good — the only thing about to happen to them is a
+ * user-confirmed replace — so filing them under a key that says "corrupt"
+ * would tell a user tidying up localStorage that their only undo is garbage.
+ */
+export const IMPORT_BACKUP_PREFIX = `${STORAGE_KEY}.backup-`;
+
+/** How many pre-import snapshots `importPins` keeps before pruning the oldest. */
+export const MAX_IMPORT_BACKUPS = 5;
+
+/**
+ * Copy whatever is currently stored aside under `${prefix}<ISO timestamp>`.
+ * Shared by `backupCorruptStore` and `backupBeforeImport` — both just need
+ * "whatever is there right now, copied somewhere safe before I write over
+ * it," and differ only in which prefix names the result and why. Returns the
+ * new key, or null when there was nothing stored to copy.
  *
  * Throws PinStoreError if the copy itself fails — the caller must then refuse
- * to overwrite. Losing notes because the *rescue* quietly failed would be worse
- * than the corruption it is rescuing from.
+ * to overwrite. Losing notes because the *rescue* quietly failed would be
+ * worse than whatever it is rescuing from. The message names no caller: it is
+ * shown verbatim to the user by both a corrupt-read recovery (where the data
+ * really is unreadable) and an import (where it usually isn't) — see
+ * `docs/reviews/Unit 3 Section B - export-import JSON.md` F3.
  */
-export function backupCorruptStore(
+function writeSnapshot(
   storage: StorageLike,
-  now: () => number = Date.now,
+  prefix: string,
+  now: () => number,
 ): string | null {
   const raw = storage.getItem(STORAGE_KEY);
   if (raw === null) {
     return null;
   }
-  const key = `${CORRUPT_BACKUP_PREFIX}${new Date(now()).toISOString()}`;
+  const key = `${prefix}${new Date(now()).toISOString()}`;
   try {
     storage.setItem(key, raw);
   } catch (cause) {
-    throw new PinStoreError('could not back up the unreadable saved data', {
-      cause,
-    });
+    throw new PinStoreError('could not copy the saved data aside', { cause });
   }
+  return key;
+}
+
+/** Every key under `prefix`, oldest first (ISO timestamps sort lexically). */
+function snapshotKeys(storage: StorageLike, prefix: string): string[] {
+  const keys: string[] = [];
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
+    if (key !== null && key.startsWith(prefix)) {
+      keys.push(key);
+    }
+  }
+  return keys.sort();
+}
+
+/** Delete the oldest keys under `prefix` past the most recent `keep`. */
+function pruneSnapshots(storage: StorageLike, prefix: string, keep: number): void {
+  const keys = snapshotKeys(storage, prefix);
+  for (const key of keys.slice(0, Math.max(0, keys.length - keep))) {
+    storage.removeItem(key);
+  }
+}
+
+/**
+ * Copy whatever is currently stored aside before a corrupt-read recovery
+ * overwrites it. The bytes are unreadable (that's why this is running), so
+ * this is the only copy of them that will ever exist — not pruned, since a
+ * corrupt read is rare enough that it doesn't accumulate the way routine
+ * imports do.
+ */
+export function backupCorruptStore(
+  storage: StorageLike,
+  now: () => number = Date.now,
+): string | null {
+  return writeSnapshot(storage, CORRUPT_BACKUP_PREFIX, now);
+}
+
+/**
+ * Copy whatever is currently stored aside before `importPins` replaces it,
+ * then prune to the `MAX_IMPORT_BACKUPS` most recent such snapshots. Unlike a
+ * corrupt-read backup, importing a file is an ordinary, repeatable action —
+ * without a cap, a user who restores backups regularly walks the store
+ * toward its quota one full copy at a time, with no way in the app to remove
+ * one (`docs/reviews/Unit 3 Section B - export-import JSON.md` F4).
+ */
+export function backupBeforeImport(
+  storage: StorageLike,
+  now: () => number = Date.now,
+): string | null {
+  const key = writeSnapshot(storage, IMPORT_BACKUP_PREFIX, now);
+  pruneSnapshots(storage, IMPORT_BACKUP_PREFIX, MAX_IMPORT_BACKUPS);
   return key;
 }
 
