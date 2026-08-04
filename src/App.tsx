@@ -4,7 +4,14 @@ import { AddPinForm } from './components/AddPinForm';
 import { PinEditor } from './components/PinEditor';
 import { Legend } from './components/Legend';
 import { ImportExport } from './components/ImportExport';
-import { createPin, leadNoun, replacePin, updatePin, type Pin } from './domain/pin';
+import {
+  createPin,
+  leadNoun,
+  removePin,
+  replacePin,
+  updatePin,
+  type Pin,
+} from './domain/pin';
 import { type LeadStrength } from './domain/leadStrength';
 import { initialViewForPins, type InitialView } from './domain/mapFit';
 import { backupCorruptStore, loadPins, savePins } from './storage/pinStore';
@@ -19,6 +26,21 @@ export default function App() {
   // Set once an import has actually replaced the store, so the sidebar can
   // say where the pre-import snapshot went (the only undo for a replace).
   const [importInfo, setImportInfo] = useState<string | null>(null);
+
+  // Set once a delete has actually removed a pin, holding the exact pin that
+  // was removed so Undo can restore it byte-for-byte (id, position, strength,
+  // notes) rather than reconstructing it. This is the ONLY undo mechanism for
+  // a delete — in-memory, and good for exactly the most recent delete (no
+  // multi-level history). Cleared only when it would actually become invalid
+  // — a new delete (which replaces it with the newer one) or a whole-store
+  // import replace — NOT by ordinary reads/writes like selecting, adding, or
+  // editing a pin, none of which can make the held pin stale or its id
+  // reappear. A whole-store snapshot like importPins takes would be the wrong
+  // tool here: that exists to protect a destructive REPLACE of everything,
+  // not a single pin, and duplicating it for one-pin deletes would be the
+  // kind of ceremony CLAUDE.md's drift rule warns against for a single-user
+  // local tool.
+  const [deleteInfo, setDeleteInfo] = useState<{ pin: Pin } | null>(null);
 
   // Where the map opens. Written exactly once, by the mount effect below, from
   // the pins the app started with — never derived from `pins`, which changes on
@@ -149,6 +171,8 @@ export default function App() {
     setSaveError(null);
     setLoadError(null); // the store now holds valid data
     setImportInfo(null);
+    // deleteInfo is NOT cleared here: adding a pin (a fresh random id) cannot
+    // make the held Undo record stale or collide with it.
     setArmed(false);
     setName('');
     // Open the new pin in the editor: you place a lead right after visiting it,
@@ -162,6 +186,9 @@ export default function App() {
     setArmed(false);
     setSaveError(null);
     setImportInfo(null);
+    // deleteInfo is NOT cleared here: selecting a pin is a read, and it was
+    // wiping out the only undo for a destructive action on the very next
+    // click a user makes after a delete (see docs/reviews/Delete a pin.md F2).
     setSelectedPinId(id);
   }
 
@@ -192,6 +219,113 @@ export default function App() {
     setSaveError(null);
     setLoadError(null); // the store now holds valid data
     setImportInfo(null);
+    // deleteInfo is NOT cleared here: editing a different pin's fields cannot
+    // make the held Undo record stale or collide with it.
+  }
+
+  /**
+   * Delete one pin. Same write discipline as add/edit: re-read the store
+   * immediately before writing (so a stale tab can't clobber a concurrent
+   * change) and only commit to UI state once the write actually succeeds.
+   *
+   * `pinToDelete` is read from that same fresh re-read, not from `pins`
+   * (React state) — otherwise Undo would restore a copy of the pin captured
+   * whenever this tab last loaded or saved, silently discarding notes another
+   * tab wrote after that (see docs/reviews/Delete a pin.md F1).
+   */
+  function handleDeletePin(id: string) {
+    let current: Pin[];
+    try {
+      current = storedPinsForWrite();
+    } catch (e) {
+      setSaveError(
+        `Couldn’t delete that pin: ${e instanceof Error ? e.message : String(e)}. It was not removed.`,
+      );
+      return;
+    }
+
+    const pinToDelete = current.find((p) => p.id === id);
+    if (!pinToDelete) {
+      // Another tab already removed this pin since it was loaded here. The
+      // pin can't be un-deleted from data that no longer exists, so resync
+      // this tab's view instead of leaving a ghost marker that every further
+      // delete attempt on it would just repeat (see F6).
+      setPins(current);
+      setSelectedPinId(null);
+      setSaveError('Couldn’t delete that pin: it was already deleted elsewhere. Your view has been refreshed.');
+      return;
+    }
+
+    let next: Pin[];
+    try {
+      next = removePin(current, id);
+      savePins(storage, next);
+    } catch (e) {
+      setSaveError(
+        `Couldn’t delete that pin: ${e instanceof Error ? e.message : String(e)}. It was not removed.`,
+      );
+      return;
+    }
+
+    setPins(next);
+    setSaveError(null);
+    setLoadError(null);
+    setImportInfo(null);
+    // Nothing left to show in the editor for a pin that no longer exists.
+    setSelectedPinId(null);
+    setDeleteInfo({ pin: pinToDelete });
+  }
+
+  /**
+   * Undo the most recent delete by re-adding the exact pin that was removed.
+   *
+   * Guards against restoring onto an id that's since reappeared (e.g. another
+   * tab imported a backup file that happens to contain this same pin, from
+   * before it was deleted here): loadPins treats duplicate ids as a corrupt
+   * store, so writing one is a real hazard, not a theoretical one. In that
+   * case the safest thing is to decline the undo rather than poison the store
+   * — there's nothing more recoverable to fall back to.
+   */
+  function handleUndoDelete() {
+    if (!deleteInfo) return;
+    const { pin } = deleteInfo;
+
+    let current: Pin[];
+    try {
+      current = storedPinsForWrite();
+    } catch (e) {
+      // storedPinsForWrite() can throw (an unreadable store whose corrupt
+      // snapshot also failed) — that used to escape this handler uncaught,
+      // leaving the Undo button on screen doing nothing forever with no
+      // banner telling the user why (see docs/reviews/Delete a pin.md F4).
+      setSaveError(
+        `Couldn’t restore “${pin.name}”: ${e instanceof Error ? e.message : String(e)}.`,
+      );
+      return;
+    }
+
+    if (current.some((p) => p.id === pin.id)) {
+      setSaveError(
+        `Couldn’t undo: another lead now uses the same id. “${pin.name}” was not restored.`,
+      );
+      setDeleteInfo(null);
+      return;
+    }
+
+    const next = [...current, pin];
+    try {
+      savePins(storage, next);
+    } catch (e) {
+      setSaveError(
+        `Couldn’t restore “${pin.name}”: ${e instanceof Error ? e.message : String(e)}.`,
+      );
+      return;
+    }
+
+    setPins(next);
+    setSaveError(null);
+    setLoadError(null);
+    setDeleteInfo(null);
   }
 
   /**
@@ -218,6 +352,7 @@ export default function App() {
         `Couldn’t import: ${e instanceof Error ? e.message : String(e)}. Nothing was changed.`,
       );
       setImportInfo(null); // don't leave an earlier success banner claiming otherwise
+      setDeleteInfo(null); // a pre-import delete can't be undone against a replaced store
       return;
     }
 
@@ -239,6 +374,7 @@ export default function App() {
     setName('');
     setSaveError(null);
     setLoadError(null);
+    setDeleteInfo(null); // the pre-import store (and any pin it held) is gone
     setImportInfo(
       `Imported ${imported.length} ${leadNoun(imported.length)}, replacing ${
         previousCount === null
@@ -279,6 +415,15 @@ export default function App() {
           </div>
         )}
 
+        {deleteInfo && (
+          <div className="banner banner--info" role="status">
+            Deleted “{deleteInfo.pin.name}”.{' '}
+            <button type="button" className="banner__undo" onClick={handleUndoDelete}>
+              Undo
+            </button>
+          </div>
+        )}
+
         {selectedPin ? (
           // key={id}: switching pins remounts the editor so its draft is
           // re-seeded from the newly selected pin instead of carrying over.
@@ -287,6 +432,7 @@ export default function App() {
             pin={selectedPin}
             onSave={handleSaveEdits}
             onClose={() => setSelectedPinId(null)}
+            onDelete={handleDeletePin}
           />
         ) : (
           <AddPinForm

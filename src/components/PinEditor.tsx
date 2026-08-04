@@ -19,14 +19,22 @@ export function PinEditor({
   pin,
   onSave,
   onClose,
+  onDelete,
 }: {
   pin: Pin;
   onSave: (edits: { name: string; strength: LeadStrength; notes: string }) => void;
   onClose: () => void;
+  onDelete: (id: string) => void;
 }) {
   const [name, setName] = useState(pin.name);
   const [strength, setStrength] = useState<LeadStrength>(pin.strength);
   const [notes, setNotes] = useState(pin.notes);
+  // Delete is destructive, so it's a two-step arm/confirm like import's
+  // Replace, not a single click. Local state is fine here — App remounts this
+  // component with key={pin.id} on every selection change, so switching to a
+  // different pin (or a successful delete, which clears selection) always
+  // resets this back to unarmed rather than leaking a stale confirmation.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   // Compare against the stored pin using the same normalization the domain
   // applies on save, so "typed a trailing space" doesn't read as a change.
@@ -109,6 +117,36 @@ export function PinEditor({
       <p className="pin-editor__coords">
         {pin.lat.toFixed(5)}, {pin.lng.toFixed(5)}
       </p>
+
+      {confirmingDelete ? (
+        <div className="pin-editor__confirm-delete">
+          <p>Delete “{pin.name}”? You’ll get a chance to undo right after.</p>
+          <div className="pin-editor__actions">
+            <button
+              type="button"
+              className="pin-editor__delete-confirm"
+              onClick={() => onDelete(pin.id)}
+            >
+              Delete lead
+            </button>
+            <button
+              type="button"
+              className="pin-editor__cancel-delete"
+              onClick={() => setConfirmingDelete(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="pin-editor__delete"
+          onClick={() => setConfirmingDelete(true)}
+        >
+          Delete lead
+        </button>
+      )}
     </form>
   );
 }

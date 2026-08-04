@@ -74,7 +74,8 @@ Why replace, given the code as it stands:
    is at least coherent — but the same physical restaurant pinned on two machines gets two *different*
    ids, so merge unions them into overlapping duplicate pins. Merge doesn't deliver what people want
    from sync; it delivers duplicates.
-3. **There is no delete yet.** Those duplicates would be permanent until a later unit ships one.
+3. **There was no delete yet.** Those duplicates would have been permanent until a later unit shipped
+   one. *(Now does: Unit 4, below — this was true when the decision above was made, not any more.)*
 
 Rejected alternative — **additive-only** ("import ids not already present, never touch existing"): needs
 no conflict rule and is ~5 lines more than replace, but it is wrong for the case that motivates this
@@ -82,18 +83,53 @@ section. Restoring a backup into a non-empty store would silently ignore the fil
 you already have — precisely the notes you were trying to recover.
 
 **If two-machine use turns out to be real, that's a sync unit, not a section of this one**, and its
-honest prerequisites are `updatedAt` on `Pin` (making "newest wins" implementable) and delete (making
-duplicates fixable).
+honest prerequisite is `updatedAt` on `Pin` (making "newest wins" implementable) — delete now exists
+(Unit 4, below), so duplicates from a merge would at least be fixable, but merge-by-id is still rejected
+outright until there's a conflict rule to drive it.
 
 **Not in this section.** Cloud sync, automatic/scheduled backups, CSV or any other format, a merge or
 conflict-resolution UI, sharing. Merge-by-id and additive import are rejected outright above, not
-deferred — building either later means first adding `updatedAt` and delete.
+deferred — building either later means first adding `updatedAt`.
+
+---
+
+## Unit 4 — Delete a pin
+
+**Problem.** A lead placed by mistake, duplicated, or no longer real has no way off the map except
+editing every field into nonsense. Parked in "Later" since unit 2 — *"wants its own confirm/undo story;
+deliberately excluded from unit 2's editing"* — because a delete is irreversible by nature, unlike an
+edit.
+
+**Done when.** From a clean checkout:
+- A pin can be removed from the map and `localStorage` from its own open editor — the same interaction
+  surface editing already uses, not a separate control on the map marker/popup.
+- **The delete is confirmed, not one-click.** A first click arms a confirmation naming the pin; only an
+  explicit second click actually removes it.
+- **The delete is recoverable in-session.** Immediately after a confirmed delete, an Undo control
+  restores the exact removed pin — id, position, strength, and notes, byte-for-byte — not a persisted or
+  multi-level history, just the single most recent delete. It stays available through ordinary
+  reads/writes (selecting a pin, adding one, editing one) and is only superseded by something that
+  actually invalidates it: a newer delete, or a whole-store import replace. It does not need to survive
+  a page reload.
+- **Delete and undo obey the same write discipline as every other write.** Both re-read the store
+  immediately before writing, acting on the pin actually in storage rather than a possibly-stale
+  in-memory copy, so a stale tab cannot silently clobber — or resurrect an outdated version of — a pin
+  another tab touched since this one loaded.
+- **Undo refuses to write over a reused id.** `loadPins` treats two pins sharing an id as a corrupt
+  store; if the deleted id has reappeared since the delete (e.g. another tab imported a backup
+  containing it), undo declines rather than writing a duplicate.
+- A delete attempted on a pin another tab already removed fails loud with a named error and resyncs this
+  tab's view, rather than leaving a marker on screen for a pin that no longer exists anywhere.
+
+**Not in this unit.** Bulk/multi-select delete, deleting from the map marker/popup directly, a persisted
+or multi-level undo history, undo surviving a page reload.
+
+Reviewed 2026-08-04: `docs/reviews/Delete a pin.md`. Findings F1–F6 landed; closed and mergeable.
 
 ---
 
 ## Later — not scheduled
 
-- **Delete a pin** (wants its own confirm/undo story; deliberately excluded from unit 2's "editing").
 - **Filter or search** by lead strength or note text; a list view of leads.
 - **Persist the map view** across reloads (see Section A's exclusion).
 - `parsePin` accepts `name: ''` while `updatePin` refuses to save it, so such a pin can be loaded but

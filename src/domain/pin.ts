@@ -156,6 +156,23 @@ export function replacePin(pins: Pin[], updated: Pin): Pin[] {
 }
 
 /**
+ * Return `pins` with the pin matching `id` removed, order preserved for the
+ * rest.
+ *
+ * Throws PinNotFoundError when no pin matches — the same fail-loud contract
+ * as replacePin: the caller saves the returned list, so a silent no-op here
+ * would report a deletion that never happened (e.g. a stale tab re-deleting
+ * a pin another tab already removed).
+ */
+export function removePin(pins: Pin[], id: string): Pin[] {
+  const index = pins.findIndex((p) => p.id === id);
+  if (index === -1) {
+    throw new PinNotFoundError(id);
+  }
+  return [...pins.slice(0, index), ...pins.slice(index + 1)];
+}
+
+/**
  * Notes are free-form: internal blank lines and spacing are the user's and are
  * preserved. Only leading/trailing whitespace is stripped, so a textarea left
  * holding just newlines stores as "no notes" rather than as whitespace.

@@ -73,6 +73,17 @@ body,
   margin-bottom: 16px;
 }
 
+.banner__undo {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* Add-pin form ------------------------------------------------------------- */
 .add-pin {
   display: flex;
@@ -226,6 +237,37 @@ body,
 
 .pin-editor__coords {
   font-variant-numeric: tabular-nums;
+}
+
+/* Delete --------------------------------------------------------------------
+   Same class+element specificity trap as `.import-export button.import-export__cancel`
+   above: `.pin-editor button` is (0,1,1), so a single class selector alone
+   would silently lose to it regardless of source order. */
+.pin-editor button.pin-editor__delete {
+  background: none;
+  border: 1px solid #d64545;
+  color: #d64545;
+}
+
+.pin-editor__confirm-delete {
+  border: 1px solid #f5c6cb;
+  background: #fdecea;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.85rem;
+}
+
+.pin-editor__confirm-delete p {
+  margin: 0 0 8px;
+  color: #8a1c1c;
+}
+
+.pin-editor button.pin-editor__delete-confirm {
+  background: #d64545;
+}
+
+.pin-editor button.pin-editor__cancel-delete {
+  background: #64748b;
 }
 
 /* Import / export ------------------------------------------------------------ */
