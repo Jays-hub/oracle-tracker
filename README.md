@@ -29,14 +29,23 @@ lives in the browser.
 
 ## Running it
 
-> The app isn't scaffolded yet — the first build unit ("Map + colored pins") creates it. Once it lands:
+### Requirements
+
+**Node `^20.19.0 || ^22.13.0 || >=24.0.0`.** That range is the intersection of our dependencies' own
+`engines`; `jsdom@29` is the binding constraint, so Node 18, 21, and 22.0–22.12 are all excluded.
+`.npmrc` sets `engine-strict=true`, so a wrong Node fails `npm ci` immediately with a clear message
+instead of surfacing later as a confusing jsdom or Vitest failure.
 
 ```bash
-npm install
+npm ci           # installs the lockfile exactly; fails on a wrong Node
 npm run dev      # dev server
 npm test         # Vitest
 npm run lint && npm run typecheck
 ```
+
+`npm ci` rather than `npm install`: it installs `package-lock.json` verbatim and refuses to rewrite it,
+which is what "from a clean checkout" in the [`CLAUDE.md`](./CLAUDE.md) acceptance bar actually means.
+Use `npm install` only when deliberately adding or upgrading a dependency.
 
 ## Roadmap
 

@@ -34,7 +34,7 @@ map tiles are the only network dependency.
    meets the real acceptance bar exists. Over-engineering is a defect. For this project specifically: a
    backend, a database, a server, an accounts system, or any external places/geo API is drift — this is
    a single-user, local-first, standalone tool.
-3. **DONE-WHEN.** "Done" (product bar) = from a clean checkout, `npm install && npm run dev` serves an
+3. **DONE-WHEN.** "Done" (product bar) = from a clean checkout, `npm ci && npm run dev` serves an
    app where I can: pin a restaurant on the map by name and location, mark its lead strength as
    strong / weak / failed and see the pin rendered in the matching color (**strong = green, weak =
    amber, failed = red**), attach and later edit free-form notes on that pin, and have every pin — its
