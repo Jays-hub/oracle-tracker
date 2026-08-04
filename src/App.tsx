@@ -5,6 +5,7 @@ import { PinEditor } from './components/PinEditor';
 import { Legend } from './components/Legend';
 import { createPin, replacePin, updatePin, type Pin } from './domain/pin';
 import { type LeadStrength } from './domain/leadStrength';
+import { initialViewForPins, type InitialView } from './domain/mapFit';
 import { backupCorruptStore, loadPins, savePins } from './storage/pinStore';
 
 const storage: Storage = window.localStorage;
@@ -13,6 +14,13 @@ export default function App() {
   const [pins, setPins] = useState<Pin[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Where the map opens. Written exactly once, by the mount effect below, from
+  // the pins the app started with — never derived from `pins`, which changes on
+  // every save. `null` means "the store hasn't been read yet", and the map is
+  // not mounted until it has, so Leaflet is created already knowing what it has
+  // to show. See MapView for why that makes the fit a one-time event.
+  const [initialView, setInitialView] = useState<InitialView | null>(null);
 
   // Draft state for the add-a-pin flow.
   const [name, setName] = useState('');
@@ -33,8 +41,10 @@ export default function App() {
   // an empty in-memory list, but we DON'T save over the stored bytes — the raw
   // data stays intact for recovery, so a bad read can never silently drop pins.
   useEffect(() => {
+    let loaded: Pin[] = [];
     try {
-      setPins(loadPins(storage));
+      loaded = loadPins(storage);
+      setPins(loaded);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
       // Snapshot the unreadable bytes NOW, while they still exist. Without
@@ -50,6 +60,9 @@ export default function App() {
         );
       }
     }
+    // Both paths, once: an unreadable store shows no pins, and the default view
+    // is exactly right for that. Set last so the map mounts knowing the pins.
+    setInitialView(initialViewForPins(loaded));
   }, []);
 
   /**
@@ -199,14 +212,21 @@ export default function App() {
         </p>
       </aside>
 
-      <main className="map-pane">
-        <MapView
-          pins={pins}
-          armed={armed}
-          selectedPinId={selectedPinId}
-          onMapClick={handleMapClick}
-          onSelectPin={handleSelectPin}
-        />
+      {/* The armed cursor is set here rather than on MapContainer, which
+          freezes its className at construction and would never show it. */}
+      <main className={`map-pane${armed ? ' map-pane--armed' : ''}`}>
+        {/* Held back for the one render it takes to read the store: a map
+            created before the pins are known could only fit itself to them
+            afterwards, which is the re-fit this unit exists to avoid. */}
+        {initialView && (
+          <MapView
+            initialView={initialView}
+            pins={pins}
+            selectedPinId={selectedPinId}
+            onMapClick={handleMapClick}
+            onSelectPin={handleSelectPin}
+          />
+        )}
       </main>
     </div>
   );

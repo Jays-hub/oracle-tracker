@@ -1,7 +1,20 @@
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaflet';
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  useMapEvents,
+  type MapContainerProps,
+} from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { colorForStrength, STRENGTH_LABELS } from '../domain/leadStrength';
+import {
+  CLOSE_UP_ZOOM,
+  FIT_PADDING_PX,
+  MARKER_SIZE_PX,
+  type InitialView,
+} from '../domain/mapFit';
 import type { Pin } from '../domain/pin';
 
 // A colored dot marker. `color` comes only from our fixed STRENGTH_COLORS map
@@ -11,8 +24,8 @@ function pinIcon(color: string, selected: boolean): L.DivIcon {
   return L.divIcon({
     className: 'pin-marker',
     html: `<span class="${cls}" style="background:${color}"></span>`,
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
+    iconSize: [MARKER_SIZE_PX, MARKER_SIZE_PX],
+    iconAnchor: [MARKER_SIZE_PX / 2, MARKER_SIZE_PX / 2],
     popupAnchor: [0, -12],
   });
 }
@@ -30,24 +43,45 @@ function ClickCapture({ onClick }: { onClick: (lat: number, lng: number) => void
 }
 
 export function MapView({
+  initialView,
   pins,
-  armed,
   selectedPinId,
   onMapClick,
   onSelectPin,
 }: {
+  initialView: InitialView;
   pins: Pin[];
-  armed: boolean;
   selectedPinId: string | null;
   onMapClick: (lat: number, lng: number) => void;
   onSelectPin: (id: string) => void;
 }) {
+  // react-leaflet reads these props once, when it CREATES the Leaflet map (its
+  // container ref callback has no dependencies), and ignores every later
+  // change. That is what makes the fit a mount-time event by construction: no
+  // save, no re-render and no state change can move the map afterwards, so an
+  // edit in progress can never have the view yanked out from under it.
+  //
+  // Exactly one form is passed: given both, react-leaflet prefers center+zoom
+  // and the fit would be silently dropped.
+  const mountView: MapContainerProps =
+    initialView.kind === 'bounds'
+      ? {
+          bounds: initialView.bounds,
+          boundsOptions: {
+            padding: [FIT_PADDING_PX, FIT_PADDING_PX],
+            // Two leads a few metres apart would otherwise fit at the tile
+            // layer's maximum zoom, which shows a roof and no context.
+            maxZoom: CLOSE_UP_ZOOM,
+          },
+        }
+      : { center: initialView.center, zoom: initialView.zoom };
+
+  // `className` is deliberately constant. MapContainer freezes className/id/
+  // style in a `useState` initialiser — the same read-once behaviour the fit
+  // relies on above — so a class toggled after mount would never reach the DOM.
+  // The armed cursor therefore lives on the wrapping `.map-pane` in App.
   return (
-    <MapContainer
-      center={[40.7128, -74.006]}
-      zoom={12}
-      className={`map${armed ? ' map--armed' : ''}`}
-    >
+    <MapContainer {...mountView} className="map">
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

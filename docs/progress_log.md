@@ -9,6 +9,111 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-04 — [reviewed] [fixed] Unit 3 Section A: fit the map to the pins
+
+[reviewed] Cold-context adversarial review: `docs/reviews/Unit 3 Section A - fit the map to the pins.md`
+(shasum `b226bd17`). **Verdict: yes, with one MAJOR caveat.** The reviewer re-ran everything, confirmed
+all four planted regressions, independently re-measured every spec bullet off the *rendered* map (tile
+zooms: 0 pins → 12, 1 pin → 15, Lisbon+Porto → 7 fitted), and verified in react-leaflet 4.2.1's installed
+source that the mount-only claim is real. Four findings; all fixed below.
+
+[fixed] **MAJOR — the fit was a function of a container size nothing ever varied.** Leaflet fits a box
+into the container *minus* the padding on both sides; once the map pane is narrower than
+`2 × FIT_PADDING_PX` that figure goes negative, the zoom comes out `Infinity`, our own `maxZoom` clamps
+it to street level, and the map opens on the centre of the bounding box with **no pin on screen** — no
+throw, no warning. Reproduced in Chrome: without a floor the pane collapses to 80 / 10 / 0 px at window
+widths of 400 / 330 / 200, and the failure threshold is a ~433px window (pane 113px, one above the 112px
+cliff). Fixed in CSS rather than with a re-fit, so the by-construction mount-only guarantee is untouched:
+`.map-pane { min-width: 240px }` and `.app { min-height: 240px }` (the pane is stretched to `.app`, so
+the vertical floor belongs on the flex container); a narrower window scrolls instead of losing the pins.
+
+[fixed] **MINOR — the padding assertion was circular.** `expectOnScreen(at, FIT_PADDING_PX)` imported the
+constant that drives the fit and asserted the view against it, so it could never fail on what it existed
+to protect: with `FIT_PADDING_PX = 0` the whole suite stayed green while the top pin moved to 12px from
+the frame. Now asserts an independent literal (`MIN_EDGE_MARGIN_PX = 24`, justified by the 22px marker).
+
+[fixed] **MINOR — neither zoom constant was pinned.** Both were asserted against the symbols the code
+returns, and both App tests were zoom-blind by construction. Added literal assertions for
+`DEFAULT_CENTER` / `DEFAULT_ZOOM` / `CLOSE_UP_ZOOM` / `FIT_PADDING_PX`, plus a `renderedZoom()` helper
+that reads the zoom off the tile URLs Leaflet actually requested — the map's answer, not our prop.
+
+[fixed] **MINOR (pre-existing) — `map--armed` never reached the DOM.** `MapContainer` does
+`const [props] = useState({className, id, style})`: the *same* read-once freeze this unit's design
+depends on also swallows `className`, so the crosshair for "place on map" had never worked. Moved to the
+wrapping `.map-pane` (`.map-pane--armed .leaflet-container`). Confirmed in Chrome: cursor now goes
+`grab → crosshair` on arm and back on cancel. Both NITs accepted as-is, as the reviewer suggested.
+
+[decided] **The CSS floor is checked against the padding, not trusted.** The reviewer's "known gap" was
+that the padding was asserted through the fit and never against the CSS. `mapFit.test.ts` now reads
+`index.css` (via `?raw`) and asserts both floors are `>= 2 * FIT_PADDING_PX + MARKER_SIZE_PX`, so raising
+the padding past what the pane affords turns the suite red. That needed `css: { include: [...] }` in
+`vite.config.ts` — Vitest stubs CSS imports to an empty string by default, which would have made the
+assertion vacuously pass. Scoped to `index.css` alone; nothing asserts on leaflet.css.
+
+Verified: `npm test` **66 passed** (6 files; was 59) · `npm run lint` clean · `npm run typecheck` clean ·
+`npm run build` succeeds. **Self-proving — 8 regressions planted, run, restored:** removing the
+`.map-pane` floor fails the CSS-tie test; `FIT_PADDING_PX = 120` (exceeding what the floor affords) fails
+3; `FIT_PADDING_PX = 0` now fails 2 including the App-level padding test *that used to stay green*;
+shifting either zoom constant fails 4; putting the armed class back on `MapContainer` fails the crosshair
+test; and the builder's original four all still fail as claimed (NYC hardcode → 4 App tests now, re-fit
+effect → the no-yank test, degenerate branch → 2, first/last corners → 3). The new small-pane test was
+checked against the reviewer's own failing case: at 90×600 it reproduces their exact figure
+(`x = -6112`), and passes at the 240px floor.
+
+**In-browser verification passed** (Google Chrome, the layout case jsdom cannot reach): pane width
+measured at six window widths with and without the floor — never below 240px with it, 0–80px without;
+crosshair arm/cancel confirmed; console clean across reloads. Fixture leads cleared from that origin.
+
+Unit 3 Section A is **done**. Next: Section B (export/import JSON).
+
+---
+
+## 2026-08-04 — [built] Unit 3 Section A: fit the map to the pins
+
+[built] The map now opens on your leads instead of on lower Manhattan. On load it fits the viewport to
+the bounding box of every saved pin (padded, capped at zoom 15); a single pin — or several at one
+address — centres at zoom 15 instead of fitting a box with no extent; an empty or unreadable store keeps
+unit 1's default NYC view. Closes the "at a glance" gap unit 2's review flagged: leads outside New York
+were rendering correctly and thousands of kilometres off screen.
+
+**Fit-on-mount-only is structural, not a flag.** react-leaflet reads `center`/`zoom`/`bounds` once, when
+it constructs the map, and ignores them afterwards — so the view is passed as a mount-time prop and no
+save, re-render or state change has a path to move the map. `App` holds the view in state written by the
+load effect alone and mounts `MapView` only once the store has been read, so Leaflet is constructed
+already knowing what it has to show.
+
+Artifacts: `src/domain/mapFit.ts` (`initialViewForPins` + the view constants, pure), `src/domain/mapFit.test.ts`,
+`src/components/MapView.tsx` (`initialView` prop → `MapContainer` mount props), `src/App.tsx`,
+`src/App.test.tsx` (+4), new `src/test/setup.ts` + `vite.config.ts` (`setupFiles`). Decision log:
+`docs/build_notes/Unit 3 Section A - fit the map to the pins.md`.
+
+[decided] **jsdom needs a real map size, and it is load-bearing.** Leaflet divides by the container's
+pixel size when fitting a box; at jsdom's 0×0 the zoom is `NaN` and the map throws while mounting, so
+without a stubbed 800×600 container *no* component test can render an app with more than one pin. The
+stub is scoped to `.leaflet-container` and is also what lets the tests assert the real bar — they read
+each pin's rendered position with `DomUtil.getPosition` and check it lands inside the viewport, rather
+than checking which props were passed.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean · `npm test` **59 passed** (6 files; was 47)
+· `npm run build` succeeds. **Self-proving — each regression planted, run, restored:** the hardcoded NYC
+centre fails 3 App tests; an effect re-fitting on every `pins` change (same padding and `maxZoom`) fails
+"never moves the map again once it has opened"; removing the degenerate-box branch fails 2 `mapFit`
+tests; taking corners from the first/last pin instead of the extremes fails 3. Planting also exposed a
+weak version of the no-yank test (a re-fit that pushed pins to the frame slipped past it) — it now grows
+the pin list to Reykjavík mid-edit, which no re-fit can absorb.
+
+**In-browser verification passed** (Google Chrome): 3 Portuguese leads → opened fitted to all three,
+padded, correct colours; edited notes and saved → markers pixel-identical; placed a 4th lead near
+Sevilla, outside the fitted box → the original three did not move; reload → re-fitted to include all
+four; single Tokyo pin → centred at street-level zoom; empty store → the unit-1 NYC default; console
+clean across five loads. Fixture leads cleared from that origin. Not marked done — awaiting the review.
+(Superseded by the `[reviewed]` / `[fixed]` entry above: this browser pass only ever looked at one
+comfortable window size, which is exactly where the review found the MAJOR.)
+
+Next: `/review Unit 3 Section A`, then Section B (export/import JSON).
+
+---
+
 ## 2026-08-03 — [decided] Unit 3 scoped: "See it all, and keep it"
 
 [decided] Unit 3 has two sections, specced in the new `docs/roadmap.md` (the project had nowhere to put
