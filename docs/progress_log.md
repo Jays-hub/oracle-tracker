@@ -9,6 +9,164 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-04 — [reviewed] [fixed] Unit 3 Section B: export/import JSON — review closed
+
+[reviewed] Cold-context adversarial review: `docs/reviews/Unit 3 Section B - export-import JSON.md`
+(shasum `e85b6fa4`). **Verdict: yes, with reservations.** Every literal roadmap bullet was implemented and
+genuinely tested, but two MAJORs kept it short of `CLAUDE.md`'s "at a glance" bar in the restore scenario;
+mutation testing (a repo copy) also caught 2 of 8 planted defects the suite missed. 2 MAJOR + 7 MINOR + 2
+NIT — all fixed below.
+
+[fixed] **MAJOR — a confirmed import never moved the map; the restored pins sat off screen until the next
+reload.** Named as an unresolved conflict between Section A ("fit on mount only") and Section B ("the
+pins in it become the pins on the map") — nothing had ever decided which wins for a *confirmed whole-store
+replace*. Resolved: treat a confirmed import as a new mount, not an ordinary save. `App.handleImportReplace`
+now recomputes `initialView` via `initialViewForPins(imported)` and force-remounts `MapView` through a
+`mapEpoch` key bumped only on import — Section A's rule (never re-fit on an ordinary save) is untouched,
+since `mapEpoch` never moves on add/edit.
+
+[fixed] **MAJOR — the destructive confirmation, and the banner after it, counted React state (`pins.length`)
+instead of what a replace would actually destroy.** With another tab having written since load, the
+confirmation could read "replace 1" while the store held 3, then report "replacing 1 previously saved"
+after all 3 were gone. Both the `ImportExport` confirmation (`getSavedCount` prop, read fresh at file-select
+time) and `App`'s post-import banner (`countStoredPins()`, read from storage right before the write) now
+name what's actually in `localStorage`, wording it as "the saved data (currently unreadable)" rather than a
+number when the store can't be read at all.
+
+[fixed] **MINOR — a failed pre-import snapshot told the user their good data was "unreadable."** The
+snapshot helper's error message was written for its original caller (a corrupt read) and never updated for
+its second one (a routine import, where the data is normally fine). Made caller-neutral: "could not copy
+the saved data aside."
+
+[fixed] **MINOR × 2 — pre-import snapshots accumulated without bound, filed under a key that said
+`corrupt`.** Split `backupCorruptStore` into two callers of a shared `writeSnapshot`: `backupCorruptStore`
+(unchanged, `.corrupt-` prefix, not pruned — rare) and new `backupBeforeImport` (`.backup-` prefix — honest,
+since these bytes are normally fine — pruned to the `MAX_IMPORT_BACKUPS` (5) most recent via new
+`removeItem`/`length`/`key` on `StorageLike`, which the real `Storage` type already satisfies).
+
+[fixed] **MINOR — the browser-download mechanic (anchor `download`, `revokeObjectURL`, `removeChild`) had
+no test coverage**; mutation-confirmed deleting any of the three left the suite green. Added a component
+test that stubs `HTMLAnchorElement.prototype.click` and asserts the filename pattern plus both cleanup
+calls.
+
+[fixed] **MINOR — the "file input resets so the same file can be retried" test could not fail**: jsdom's
+`fireEvent.change` never sets `.value`, so the assertion held whether or not the component reset it. The
+shared `selectFile` test helper now seeds a fakepath `.value` via `Object.defineProperty` first, giving the
+post-selection reset something real to observe (mutation-confirmed: removing the reset now fails it).
+
+[fixed] **MINOR — a success banner from an earlier import survived a later one that failed**, showing a
+contradictory success + failure pair. `handleImportReplace`'s catch block now clears `importInfo`.
+
+[fixed] **MINOR — an armed placement survived an import.** The first click after a restore could silently
+add a pin the user never meant to place, into the store they'd just restored. `handleImportReplace` now
+resets `armed`/`name`, matching `handleSelectPin`. Confirmed in Chrome: armed, imported, confirmed — the
+crosshair state cleared and a map click added nothing.
+
+[fixed] **NIT — a rejected file only ever said "the file contains an invalid pin,"** discarding
+`parsePin`'s specific reason. `ImportExport` now appends `err.cause`'s message when present (e.g. `…got
+"lukewarm"`), unfixable-by-the-user feedback turned fixable.
+
+[fixed] **NIT × 2.** Picking a second file before the first's `FileReader` resolved could show a stale
+confirmation or silently drop the real error — a `selectionRef` "latest request wins" guard in
+`ImportExport` now drops superseded reads. The destructive Replace button was styled identically to Export.
+
+[decided] **Found and fixed during in-browser verification, not by the reviewer: `.import-export__cancel`
+and the new `.import-export__replace` never actually applied.** `.import-export button` (class+element,
+specificity 0,1,1) beats a single class selector (0,1,0) regardless of source order — both buttons rendered
+the same blue in Chrome even after the CSS was added. Re-verified the reviewer's own read of the source
+("only Cancel is differentiated") was itself wrong for the same reason. Fixed by matching specificity:
+`.import-export button.import-export__cancel` / `…__replace`.
+
+[decided] **Self-proving surfaced a real test-isolation gap, fixed on the spot.** The F8 regression test
+mocks `window.localStorage.setItem` and calls `vi.restoreAllMocks()` at the end of the test body; planting
+the F8 regression made that test fail *before* reaching its own restore, leaking the mock into every later
+test in the file (7 cascading failures, not 1). Moved the restore into the shared `afterEach` in both
+`App.test.tsx` and `ImportExport.test.tsx` so a failing test can never leak a mock into its neighbours —
+this is a standing hygiene fix, not specific to this one test.
+
+Re-ran the gate: `npm run typecheck` clean · `npm run lint` clean · `npm test` **106 passed** (8 files; was
+92) · `npm run build` succeeds. **Self-proving — all 11 findings planted, run, restored:** each of F1–F11
+was individually reverted and confirmed to fail exactly the test(s) written to guard it (F1 and F2 each
+independently on both their App-level and component-level assertions; F5's revert alone failed 5 tests
+across 3 files). No regression needed more than the one intended guard to catch it after the isolation fix
+above.
+
+**In-browser verification passed** (Google Chrome, dev server): seeded 2 NYC pins, armed a placement,
+imported a 2-pin Portugal file (Porto + Lisbon, nowhere near NYC) — **map re-fitted to both pins
+immediately, no reload**, banner read "Imported 2 leads, replacing 2 previously saved. Your previous data
+was backed up to "restaurant-map.pins.v1.**backup**-…"" (not `.corrupt-`). Re-armed a placement, imported a
+single-pin file, confirmed — map centred on the new pin at street zoom, the add-pin pane showed **not**
+armed (`map-pane` with no `--armed` class, form reset to empty), and a click on the map added nothing:
+`localStorage` still held exactly the one imported pin. Replace rendered red, Cancel rendered grey, Export
+stayed blue. Console clean across three loads and two imports. Fixture data cleared from that origin.
+
+Unit 3 Section B is **done and mergeable**. Unit 3 ("See it all, and keep it") is complete: Section A
+(fit-to-pins) and Section B (export/import) are both built, reviewed, and fixed.
+
+Next: pick the next unit from `docs/roadmap.md`'s "Later" list (delete a pin, filter/search, or persisting
+the map view), or scope a new one.
+
+---
+
+## 2026-08-04 — [built] Unit 3 Section B: export/import JSON
+
+[built] Closes the "keep it" half of unit 3: a **Backup** section in the sidebar exports every pin to a
+dated JSON file (`Blob` + `URL.createObjectURL`, no network) and imports one back, replacing the whole
+store — per the roadmap's settled decision, not a merge — behind an explicit confirmation naming both
+counts ("Replace 1 saved lead with the 2 leads in…?"). Import validates every record through `parsePin`
+(the same boundary `loadPins` uses) and rejects the whole file on any invalid record, duplicate id, or
+non-array payload, leaving the current store untouched. Before a confirmed replace actually writes, the
+pre-import store is snapshotted via the existing `backupCorruptStore` mechanism — reused outright, not
+reimplemented — so a bad import always has an undo; a failed snapshot hard-aborts.
+
+Artifacts: `src/storage/importExport.ts` (`parseImportPayload`, `exportFilename`, `importPins`,
+`ImportError`), `src/storage/importExport.test.ts` (13, incl. the spec's literal round-trip test:
+export → wipe → import → byte-identical store), `src/components/ImportExport.tsx` (+ `.test.tsx`, 7),
+`src/App.tsx` (`handleImportReplace`, `importInfo` banner), `src/App.test.tsx` (+6), `src/test/setup.ts`
+(jsdom stub for `URL.createObjectURL`/`revokeObjectURL` — jsdom implements `Blob`/`File` but not the
+blob-URL registry, verified directly), `src/index.css`. Decision log:
+`docs/build_notes/Unit 3 Section B - export-import JSON.md`.
+
+[decided] **`handleImportReplace` skips the read-modify-write guard the add/edit paths use.** Those
+re-read the store immediately before writing so a stale tab can't clobber another tab's additions
+(unit 2). Import is the opposite case on purpose: the user just confirmed "replace with exactly this
+file, N for M" — merging in a concurrent write here would silently turn a confirmed replace into
+neither the file nor the pre-confirmation state. The pre-import snapshot still reads storage fresh, so
+the backup itself is never stale.
+
+[decided] **The open editor is always closed on import (`setSelectedPinId(null)`), even when the
+imported file reuses the same pin id.** The different-id case is already handled for free (`pins.find`
+returns nothing). The reset exists for the sharper case — a same-id record with different data (a
+plausible restore-from-backup shape) — where `PinEditor`'s `key={pin.id}` would otherwise NOT remount
+and the sidebar would keep showing stale draft state. Caught by planting the regression: the first
+version of the guarding test used different ids and didn't catch it; rewritten to the same-id case, it
+did.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean · `npm test` **92 passed** (8 files; was 66) ·
+`npm run build` succeeds. **Self-proving — 5 regressions planted, run, restored:** skipping the
+pre-import backup fails 2 tests across two files; letting `parseImportPayload` silently drop invalid
+records instead of rejecting the whole file fails 3 tests across three files; removing the duplicate-id
+check fails 2; skipping the post-import `setSelectedPinId(null)` reset was NOT caught by the first
+version of its guarding test (see decision above) until the test was rewritten to the same-id case, which
+then failed as expected.
+
+**In-browser verification passed** (Google Chrome): seeded 3 pins with multi-line/unicode/quoted notes →
+exported → downloaded file byte-identical to the seed. Cleared `localStorage`, re-imported that same
+file onto an empty store → confirmation read "Replace 0 saved leads with the 3 leads in
+'restaurant-map-2026-08-04.json'?" → confirmed → all 3 pins restored, store byte-identical, no spurious
+backup key (nothing to back up). Seeded 1 different pin, imported a different 2-pin file → confirmation
+named both counts correctly → confirmed → store held exactly the 2 new pins, a timestamped backup key
+held the original pin exactly, sidebar banner named it. An invalid file (`strength: "lukewarm"`) was
+rejected immediately with a named error, no confirmation offered, store unchanged. Cancelling a pending
+import left the store unchanged. Console clean throughout. Fixture leads and the fixture download file
+cleared from that origin/folder afterward.
+
+Not marked done — awaiting the review.
+
+Next: `/review Unit 3 Section B`.
+
+---
+
 ## 2026-08-04 — [reviewed] [fixed] Unit 3 Section A: fit the map to the pins
 
 [reviewed] Cold-context adversarial review: `docs/reviews/Unit 3 Section A - fit the map to the pins.md`
