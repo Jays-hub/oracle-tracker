@@ -9,6 +9,36 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-03 — [decided] Unit 3 scoped: "See it all, and keep it"
+
+[decided] Unit 3 has two sections, specced in the new `docs/roadmap.md` (the project had nowhere to put
+a unit's acceptance criteria *before* it was built — units 1–2 were specced in one-line "Next" notes;
+unit 3 is too big for that):
+- **A — Fit the map to the pins.** Closes the MINOR from unit 2's review: the hardcoded NYC center means
+  leads elsewhere aren't visible without panning, which is exactly what `CLAUDE.md`'s "at a glance"
+  Winning sentence promises. Fit on mount only — never re-fit on save, or the map yanks out from under
+  an edit in progress.
+- **B — Export/import JSON.** Requested after the realization that `localStorage` is one browser on one
+  machine with no way out: a new laptop or "clear browsing data" loses every visit note, and notes are
+  prose that can't be reconstructed. Local-first (`Blob` download, `FileReader` upload — no network).
+  Import validates every record through `parsePin` and rejects the whole file on any bad one, snapshots
+  the existing store before replacing it, and must round-trip losslessly under test.
+
+[decided] **Import replaces the whole store** — not merge-by-id, not additive. Three facts in today's
+code decide it: `Pin` has no `updatedAt`, so "newest wins" isn't implementable and the remaining rules
+are replace applied per-pin — the worse version, since a conflicting pin loses prose *inside* a lead you
+have no reason to open; `crypto.randomUUID` ids mean the same restaurant pinned on two machines gets two
+ids, so merge yields overlapping duplicates rather than sync; and there is no delete yet to clean those
+up. Additive-only was rejected too: restoring a backup into a non-empty store would silently skip the
+file's version of every pin already present — exactly the notes being recovered. Replace is destructive
+but visible, confirmed, and undoable via the pre-import snapshot. Real two-machine sync is a later unit
+whose prerequisites are `updatedAt` + delete. Reasoning recorded in `docs/roadmap.md` §3B.
+
+Also parked in the roadmap's "Later": delete a pin, filter/search, persisting the map view, and the two
+unfixed NITs from unit 2's review.
+
+---
+
 ## 2026-08-03 — [reviewed][fixed] Unit 2: notes + editing per pin — review closed
 
 [reviewed] Cold-context adversarial review (`docs/reviews/Unit 2 - notes + editing per pin.md`, shasum
