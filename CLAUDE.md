@@ -49,7 +49,7 @@ _(These scripts land with the first build unit, which scaffolds the Vite app.)_
 
 ## Current status
 Stack: React + Vite + TypeScript + Leaflet + OSM tiles, `localStorage` persistence, Vitest +
-ESLint/`tsc`. **Units built: 4.** Unit 1 "Map + colored pins" and Unit 2 "notes + editing per pin" —
+ESLint/`tsc`. **Units built: 5.** Unit 1 "Map + colored pins" and Unit 2 "notes + editing per pin" —
 reviewed, fixed, merged. Unit 3 "See it all, and keep it" — **built, reviewed, fixes landed**: (A) the
 map fits itself to every saved pin on load instead of opening over a hardcoded NYC center; (B) a
 sidebar Backup control exports every pin to a dated JSON file and imports one back as a confirmed
@@ -59,5 +59,10 @@ confirmed import re-fits the map immediately, no reload needed). Unit 4 "Delete 
 reviewed, fixes landed**: a pin can be removed from its own editor behind a two-step confirm, with an
 in-session Undo that survives ordinary reads/writes and is superseded only by a newer delete or an
 import replace; delete and undo both act on a freshly re-read store, never a stale in-memory copy.
-**Next:** pick from `docs/roadmap.md`'s "Later" list (filter/search by strength, persist the map view
-across reloads) or scope a new unit.
+Unit 5 "Filter/search leads" — **built, reviewed, fixes landed**: a sidebar control narrows the map to
+selected lead strengths and/or a case-insensitive text search over name and notes, combining as AND;
+filtering is read-only over storage, the current selection, and the add-pin flow, and never re-fits the
+map. A save made while a filter is active now resets the filter rather than rendering invisibly, so the
+DONE-WHEN "see it rendered" bar holds even mid-filter.
+**Next:** pick from `docs/roadmap.md`'s "Later" list (persist the map view across reloads, a list view
+of leads) or scope a new unit.

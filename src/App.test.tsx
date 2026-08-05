@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react';
-import { DomUtil } from 'leaflet';
+import { DomUtil, TileLayer, type Map as LeafletMap } from 'leaflet';
 import {
   STORAGE_KEY,
   CORRUPT_BACKUP_PREFIX,
@@ -131,6 +131,30 @@ function renderedZoom(): number {
   const z = tile.src.match(/\/(\d+)\/\d+\/\d+\.png/)?.[1];
   if (z === undefined) throw new Error(`unrecognised tile url: ${tile.src}`);
   return Number(z);
+}
+
+/**
+ * Captures the live Leaflet map instance during `render(<App />)`, by
+ * intercepting the one TileLayer every render creates and forwarding to its
+ * real `onAdd` so tiles still mount exactly as they would otherwise. Lets a
+ * test pan/zoom the actual map — not just read marker positions off it — to
+ * prove a LATER action doesn't move it, which markerPositions() alone cannot:
+ * that proves "is this pin on screen", not "did the map move".
+ */
+function captureLeafletMap(renderApp: () => void): LeafletMap {
+  let captured: LeafletMap | undefined;
+  const originalOnAdd = TileLayer.prototype.onAdd;
+  const spy = vi
+    .spyOn(TileLayer.prototype, 'onAdd')
+    .mockImplementation(function (this: TileLayer, map: LeafletMap) {
+      captured = map;
+      originalOnAdd.call(this, map);
+      return this;
+    });
+  renderApp();
+  spy.mockRestore();
+  if (!captured) throw new Error('TileLayer.onAdd was never called — is the map mounted?');
+  return captured;
 }
 
 beforeEach(() => window.localStorage.clear());
@@ -933,5 +957,208 @@ describe('App — export/import replaces the whole store', () => {
     const blob = createObjectURL.mock.calls[0][0] as Blob;
     await expect(blob.text()).resolves.toBe(serializePins(stored()));
     createObjectURL.mockRestore();
+  });
+});
+
+describe('App — filter/search narrows the map', () => {
+  const gamma: Pin = {
+    id: 'g',
+    name: 'Gamma Tavern',
+    lat: 40.73,
+    lng: -74.03,
+    strength: 'failed',
+    notes: 'Great wine list, shame it closed.',
+  };
+
+  function strengthCheckbox(label: 'Strong' | 'Weak' | 'Failed') {
+    return screen.getByRole('checkbox', { name: label });
+  }
+  function searchBox() {
+    return screen.getByRole('searchbox', { name: /search leads/i });
+  }
+
+  // The core bar: unchecking a strength hides exactly those markers, and
+  // leaves the stored pins and their count completely untouched — a filter
+  // is a view, not a mutation.
+  it('hides pins whose strength is deselected, without touching storage', () => {
+    seed([alpha, beta, gamma]); // strong, weak, failed
+    render(<App />);
+    expect(markers()).toHaveLength(3);
+
+    fireEvent.click(strengthCheckbox('Weak'));
+
+    expect(markers()).toHaveLength(2);
+    // Content, not just length: a mutation that silently narrowed the WRITE
+    // (not just the render) to the visible subset would still pass a length
+    // check here (docs/reviews/filter-search-leads.md F3).
+    expect(stored()).toEqual([alpha, beta, gamma]);
+    expect(screen.getByText(/showing 2 of 3 leads/i)).toBeTruthy();
+  });
+
+  // The reason search exists at all: finding a lead by what's written about
+  // it, not only by its name.
+  it('matches search text against notes as well as the name', () => {
+    seed([alpha, beta, gamma]);
+    render(<App />);
+
+    fireEvent.change(searchBox(), { target: { value: 'wine' } });
+
+    expect(markers()).toHaveLength(1); // only gamma mentions wine
+    expect(stored()).toEqual([alpha, beta, gamma]); // content, not just length (F3)
+  });
+
+  // Strength and text must combine (AND), not each independently widen the
+  // result — otherwise deselecting "failed" while searching "wine" would
+  // still surface the failed-only match.
+  it('combines the strength and text filters as AND', () => {
+    seed([alpha, beta, gamma]); // gamma (failed) is the only "wine" match
+    render(<App />);
+
+    fireEvent.click(strengthCheckbox('Failed'));
+    fireEvent.change(searchBox(), { target: { value: 'wine' } });
+
+    expect(markers()).toHaveLength(0);
+    expect(screen.getByText(/no leads match your filters/i)).toBeTruthy();
+  });
+
+  // Export is read-only over the filter too: a backup must be every saved
+  // lead, not whatever happens to be on screen. Correct today, but was
+  // unguarded — mutating the ImportExport `pins` prop to the filtered subset
+  // passed the whole suite untouched (docs/reviews/filter-search-leads.md F4).
+  it('exports every saved lead, not just the ones the current filter shows', async () => {
+    seed([alpha, beta, gamma]);
+    render(<App />);
+
+    fireEvent.click(strengthCheckbox('Weak')); // narrows to 2 of 3 visible
+    expect(markers()).toHaveLength(2);
+
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL');
+    fireEvent.click(screen.getByRole('button', { name: /export as json/i }));
+
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    await expect(blob.text()).resolves.toBe(serializePins([alpha, beta, gamma]));
+    createObjectURL.mockRestore();
+  });
+
+  it('Clear filters restores every pin and the control disappears', () => {
+    seed([alpha, beta, gamma]);
+    render(<App />);
+
+    fireEvent.click(strengthCheckbox('Weak'));
+    fireEvent.change(searchBox(), { target: { value: 'zzz-no-match' } });
+    expect(markers()).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: /clear filters/i }));
+
+    expect(markers()).toHaveLength(3);
+    expect((searchBox() as HTMLInputElement).value).toBe('');
+    expect(screen.queryByRole('button', { name: /clear filters/i })).toBeNull();
+    // Clear is a view reset, not a write: reproduces the reviewer's M12
+    // mutation (savePins(storage, visiblePins) in handleClearFilter, which
+    // would overwrite the store with an empty array while narrowed to zero
+    // matches) — content equality catches it, toHaveLength(0) would not
+    // (docs/reviews/filter-search-leads.md F3).
+    expect(stored()).toEqual([alpha, beta, gamma]);
+    // The unfiltered wording branch, otherwise untested (F5): a regression
+    // that always renders the filtered copy would leave this reading "No
+    // leads match your filters." even with every pin back on screen.
+    expect(screen.getByText(/3 leads on the map/i)).toBeTruthy();
+  });
+
+  // Filtering hides a marker, but the pin is still the one open in the
+  // editor — it must not be force-closed just because its own marker
+  // disappeared, the same "read actions don't clobber other state" rule
+  // Undo relies on (docs/reviews/Delete a pin.md F2).
+  // The unit's headline safety claim — filtering never re-fits or moves the
+  // map — had zero tests guarding it: a mutation that force-remounted the
+  // map on every filter change passed the whole suite untouched. Pan+zoom
+  // the REAL map first, so this proves the filter doesn't reset the view,
+  // not merely that it happens to coincide with the mount-time fit
+  // (docs/reviews/filter-search-leads.md F2).
+  it('never moves or re-fits the map when a filter changes', () => {
+    seed([alpha, beta, gamma]);
+    const map = captureLeafletMap(() => render(<App />));
+
+    act(() => {
+      map.setView([48.8566, 2.3522], 9); // Paris — nowhere near the seeded pins
+    });
+    const center = map.getCenter();
+    const zoom = map.getZoom();
+
+    function expectUnmoved() {
+      expect(map.getCenter().lat).toBeCloseTo(center.lat);
+      expect(map.getCenter().lng).toBeCloseTo(center.lng);
+      expect(map.getZoom()).toBe(zoom);
+    }
+
+    fireEvent.click(strengthCheckbox('Weak'));
+    expectUnmoved();
+
+    fireEvent.change(searchBox(), { target: { value: 'wine' } });
+    expectUnmoved();
+
+    fireEvent.click(screen.getByRole('button', { name: /clear filters/i }));
+    expectUnmoved();
+  });
+
+  // F1: a pin placed while a filter is active used to save correctly but
+  // render nothing — the store went 3→4, the sidebar said "4 leads", and no
+  // marker existed for the just-placed lead. Reproduces the reviewer's probe:
+  // filter to "not the strength you're about to place", place a lead, and
+  // confirm it's actually visible rather than silently hidden by a filter
+  // still in effect (docs/reviews/filter-search-leads.md F1).
+  it('resets the filter rather than hide a lead just placed', () => {
+    seed([alpha, beta, gamma]); // strong, weak, failed
+    render(<App />);
+
+    fireEvent.click(strengthCheckbox('Strong')); // hides alpha; 2 of 3 visible
+    expect(markers()).toHaveLength(2);
+
+    // The add form's strength defaults to 'strong' — exactly what's hidden.
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'New Strong Lead' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    clickMapAt(30, 40);
+
+    expect(stored()).toHaveLength(4);
+    expect(markers()).toHaveLength(4); // the new lead is actually on screen
+    expect(screen.queryByRole('button', { name: /clear filters/i })).toBeNull();
+  });
+
+  // Same hole, the edit path: saving a strength change into a bucket the
+  // active filter has deselected used to leave the marker gone while the
+  // editor stayed open on it, with nothing explaining why.
+  it('resets the filter rather than hide the pin just edited into a deselected strength', () => {
+    seed([alpha]); // strong
+    render(<App />);
+    fireEvent.click(markers()[0]);
+
+    fireEvent.click(strengthCheckbox('Failed')); // alpha (strong) still visible
+    expect(markers()).toHaveLength(1);
+
+    fireEvent.change(
+      screen
+        .getByDisplayValue('Alpha Cafe')
+        .parentElement!.parentElement!.querySelector('select')!,
+      { target: { value: 'failed' } },
+    );
+    save();
+
+    expect(stored()[0].strength).toBe('failed');
+    expect(markers()).toHaveLength(1); // still visible, not hidden by "Failed" being off
+    expect(screen.queryByRole('button', { name: /clear filters/i })).toBeNull();
+  });
+
+  it('does not close the open editor when a filter hides its own marker', () => {
+    seed([alpha, beta]); // alpha = strong
+    render(<App />);
+    fireEvent.click(markers()[0]); // open alpha's editor
+    expect(notesBox()).toBeTruthy();
+
+    fireEvent.click(strengthCheckbox('Strong')); // hides alpha's marker
+
+    expect(markers()).toHaveLength(1); // only beta left on the map
+    expect(notesBox()).toBeTruthy(); // alpha's editor is still open
   });
 });

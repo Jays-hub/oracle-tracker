@@ -49,11 +49,10 @@ Use `npm install` only when deliberately adding or upgrading a dependency.
 
 ## Roadmap
 
-- **Unit 1 — Map + colored pins** _(next)_: render the Leaflet map, add a restaurant (name +
-  click-to-place), set lead strength → pin color, persist pins across reload.
-- **Unit 2 — Notes + editing**: free-form notes per pin; click a pin to view and edit its name,
-  strength, and notes.
-- Later, as earned: filter/search by strength or name; import/export.
+Built so far: map + colored pins, notes + editing per pin, fit-to-pins on load, export/import JSON
+backup, delete a pin with undo, and filter/search leads by strength or text. See
+[`docs/roadmap.md`](./docs/roadmap.md) for unit specs and [`docs/progress_log.md`](./docs/progress_log.md)
+for the running record of what's shipped and what's next.
 
 The product's precise "done-when" acceptance bar lives in [`CLAUDE.md`](./CLAUDE.md) (standing order #3).
 

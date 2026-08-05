@@ -9,6 +9,142 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-05 — [reviewed] [fixed] Unit 5: filter/search leads — review closed
+
+[reviewed] Cold-context adversarial review: `docs/reviews/filter-search-leads.md` (shasum `7181bc8c`).
+**Verdict: yes** against Unit 5's own "Done when" bullets — all six met and verified by running, not by
+reading — but **no** against `CLAUDE.md`'s "see the pin rendered" bar in one state: a save made while a
+filter is active could render nothing. 1 MAJOR + 5 MINOR + 4 NIT — all addressed below.
+
+[fixed] **MAJOR — a pin placed or edited while a filter is active saved correctly but rendered nothing,
+with no indication why.** Reproduced: filter to hide "Strong", place a new (default-strength) lead — the
+store went 3→4, the sidebar said "Showing 1 of 4 leads", and no marker existed for the just-placed lead
+anywhere on the map; the same held for an edit that moved a pin's strength into a hidden bucket, with its
+own editor left open over an invisible marker. `handleMapClick` and `handleSaveEdits` now check the
+resulting pin against the active filter with `matchesFilter`; if it would be hidden, the filter resets to
+`allPinsFilter()` rather than leaving the save silently invisible — the cheaper of the reviewer's two
+options, needing no new copy. Two new App tests guard both paths.
+
+[fixed] **MINOR — the unit's headline safety claim, "filtering never re-fits or moves the map," had zero
+tests.** The behaviour was correct but undefended: mutation-planting a forced remount on every filter
+toggle (`setMapEpoch` in `handleToggleStrength`) passed the whole 139-test suite untouched. Added a test
+that captures the *live* Leaflet map instance (intercepting `TileLayer.prototype.onAdd`, the same
+technique the reviewer used), pans/zooms it away from the mount-time fit, then toggles a strength, types a
+query, and clicks Clear — asserting `getCenter()`/`getZoom()` never move. Reran the planted mutation
+against the new test: fails (the stale map reference throws once remounted).
+
+[fixed] **MINOR — "filtering never touches `localStorage`" was guarded on one of three paths, and by
+length rather than content.** Only the strength-toggle test asserted anything about storage, and even
+that only checked `toHaveLength(3)` — the reviewer's planted mutation (writing `visiblePins` into
+`handleClearFilter`, silently emptying the store while narrowed to zero matches) passed clean. All three
+paths (toggle, query, Clear) now assert full content equality (`toEqual([alpha, beta, gamma])`); the same
+mutation now fails exactly that assertion.
+
+[fixed] **MINOR — export-while-filtered was correct but unguarded**, the one place a regression here could
+cause permanent data loss. Added a test that filters the map down to a subset, exports, and asserts the
+blob contains every saved lead; mutating the `ImportExport` `pins` prop to `visiblePins` now fails it
+(confirmed: the filtered-out pin is missing from the exported JSON).
+
+[fixed] **MINOR — the unfiltered sidebar wording branch ("N leads on the map …") had no test at all**; the
+reviewer's mutation collapsing both wording branches into the filtered one passed clean. Added the
+count-text assertion to the existing "Clear filters restores every pin" test, closing exactly the gap the
+builder had flagged as their own least-confident spot.
+
+[fixed] **MINOR — the filtered result count wasn't announced to screen readers, and the "click a pin" hint
+disappeared while filtering.** `.sidebar__count` gets `aria-live="polite"` rather than `role="status"`:
+the import/delete banners already claim the sole `role="status"` in the sidebar, and several existing
+tests call `getByRole('status')` expecting exactly one match — adding a second `status` region would have
+broken three passing tests for an accessibility fix. A plain live region announces changes without
+claiming that role. The "click a pin to read or edit its notes" hint now also shows in the filtered
+non-empty branch, not just the unfiltered one.
+
+[fixed] **NIT — `handleToggleStrength`'s parameter shadowed the add-form's `strength` state** (harmless
+today, a landmine for a future edit inside that function). Renamed to `toggled`.
+
+[fixed] **NIT — `useState<PinFilter>(allPinsFilter())` allocated a throwaway `Set` every render.** Changed
+to the lazy form, `useState(allPinsFilter)`.
+
+[decided] **NIT — a whitespace-only search query shows visible characters in the box while every other
+affordance (Clear control, "Showing N of M" wording) says nothing is filtered.** The reviewer confirmed
+the underlying semantics are correct (whitespace genuinely isn't a query) and offered no fix, only naming
+the affordance as inconsistent. Considered and left unchanged: trimming the query on every keystroke would
+strip a trailing space the instant it's typed, silently merging the next word into the current one —
+worse than the cosmetic mismatch it would fix. Documented the tradeoff in `pinFilter.ts` so a future
+reader doesn't "fix" it into that regression.
+
+[fixed] **NIT — `README.md`'s Roadmap section was stale**, still listing "Unit 1 — Map + colored pins
+_(next)_" and filter/search as unbuilt future work. Replaced with a pointer to `docs/roadmap.md` and
+`docs/progress_log.md` instead of a hand-maintained unit list, so this can't go stale the same way again.
+
+Re-ran the gate: `npm run typecheck` clean · `npm run lint` clean · `npm test` **143 passed** (9 files; was
+139) · `npm run build` succeeds (86 modules, 315.07 kB JS). **Self-proving — all 5 testable findings
+planted, run, restored:** F1 (both the add-path and edit-path guards, independently), F2 (the exact
+force-remount mutation), F3 (the exact Clear-path store-wipe mutation), F4 (the exact `visiblePins`-export
+mutation), and F5 (the exact always-filtered-wording mutation) were each reintroduced in turn and
+confirmed to fail exactly the test written to catch it, then reverted — `git diff` shows no leftover
+markers.
+
+**In-browser verification passed** (Google Chrome, dev server): seeded a strong lead, unchecked "Strong,"
+confirmed the marker vanished and the sidebar read "No leads match your filters."; placed a second strong
+lead while still filtered — **both markers appeared immediately**, "Strong" re-checked itself, and "Clear
+filters" disappeared, with no reload needed. Repeated the edit-path case: unchecked "Weak," opened the
+first lead, changed its strength to Weak and saved — the marker recolored to amber and **stayed visible**,
+"Weak" re-checked itself. Typed "cafe" into search: sidebar correctly read "Showing 1 of 2 leads · click a
+pin to read or edit its notes" (F6's hint now present under an active filter). Reloaded the page: both
+leads persisted with the filter correctly reset to unfiltered (a filter is a view, never persisted, by
+design). Console clean across the session. Fixture data cleared from that origin afterward.
+
+Unit 5 is **done and mergeable**. `CLAUDE.md`'s "see the pin rendered" bar now holds even while a filter
+is active — placing or editing a lead is never invisible.
+
+Next: pick another unit from `docs/roadmap.md`'s "Later" list, or scope a new one.
+
+---
+
+## 2026-08-04 — [built] Unit 5: filter/search leads
+
+[built] Scoped and closed the last outstanding item on `docs/roadmap.md`'s "Later" list. A new sidebar
+control (`PinFilterBar`) lets you narrow the map to selected lead strengths and/or a case-insensitive text
+search over both name and notes; the two combine as AND. Filtering only changes which pins render as
+markers — it's read-only over `localStorage`, pin data, the current selection, and the add-pin flow, and
+never re-fits the map (Section A's mount-only fit rule is untouched). The sidebar names what's showing
+("Showing N of M leads" / "No leads match your filters.") with a one-click Clear back to everything.
+
+[decided] Split "a list view of leads" out of the roadmap's original one-liner into its own future unit —
+a filterable map is the smaller slice that satisfies `CLAUDE.md`'s "at a glance" bar on its own; a list
+view is a materially bigger surface with its own map-sync story. Also decided a confirmed import does
+**not** reset the filter (it's a view preference, not pin data — worst case is a visible "no leads
+match" plus the always-present Clear control, never silent data loss).
+
+Artifacts: `src/domain/pinFilter.ts` (`PinFilter`, `allPinsFilter`, `isFilterActive`, `matchesFilter`,
+`filterPins`) + `src/domain/pinFilter.test.ts` (9 tests), `src/components/PinFilterBar.tsx`, `src/App.tsx`
+(`filter` state + 3 handlers, `visiblePins` passed to `MapView`, sidebar count wording) + 5 new tests in
+`src/App.test.tsx`, `src/index.css` (`.pin-filter*`). New roadmap section (`Unit 5`) written with a
+"Done when" before the build, since this was a "Later" one-liner with no acceptance criteria yet — same
+pattern Unit 4 followed. Decision log: `docs/build_notes/Unit 5 - filter-search leads.md`.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean · `npm test` **139 passed** (9 files; was 125)
+· `npm run build` succeeds. **Self-proving — 3 regressions planted, run, restored:** AND swapped for OR
+in `matchesFilter` fails 11 tests across 2 files (including the dedicated AND-combination test); dropping
+the notes half of the text match fails exactly the 2 tests guarding it; letting an empty strength
+selection silently fall back to "match everything" fails exactly its dedicated edge-case test.
+
+**In-browser verification passed** (Google Chrome, dev server): seeded 3 pins (strong/weak/failed, one
+with "wine" only in a failed pin's notes and one in a strong pin's notes) — unchecking Weak hid exactly
+the amber marker and left `localStorage` holding all 3, byte-identical; searching "wine" combined with
+Weak unchecked correctly showed only the one pin matching **both** the strength and text filters (AND,
+confirmed live, not just in tests); a query matching nothing showed "No leads match your filters." with
+every marker gone (confirmed via zoom that the only remaining icon was an OSM basemap hospital glyph, not
+an app marker); Clear filters restored all 3 markers and the unfiltered count text. Opened a pin's editor,
+then filtered out its own strength — the marker disappeared but the editor stayed open, undisturbed.
+Console clean across two loads. Fixture pins cleared from that origin (`localStorage.clear()`) afterward.
+
+Not marked done — awaiting the review.
+
+Next: `/review filter/search leads`.
+
+---
+
 ## 2026-08-04 — [reviewed] [fixed] Delete a pin — review closed
 
 [reviewed] Cold-context adversarial review: `docs/reviews/Delete a pin.md` (shasum `53f3d917`).

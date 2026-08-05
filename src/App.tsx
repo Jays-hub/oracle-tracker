@@ -4,6 +4,7 @@ import { AddPinForm } from './components/AddPinForm';
 import { PinEditor } from './components/PinEditor';
 import { Legend } from './components/Legend';
 import { ImportExport } from './components/ImportExport';
+import { PinFilterBar } from './components/PinFilterBar';
 import {
   createPin,
   leadNoun,
@@ -14,6 +15,13 @@ import {
 } from './domain/pin';
 import { type LeadStrength } from './domain/leadStrength';
 import { initialViewForPins, type InitialView } from './domain/mapFit';
+import {
+  allPinsFilter,
+  filterPins,
+  isFilterActive,
+  matchesFilter,
+  type PinFilter,
+} from './domain/pinFilter';
 import { backupCorruptStore, loadPins, savePins } from './storage/pinStore';
 import { importPins } from './storage/importExport';
 
@@ -70,6 +78,35 @@ export default function App() {
   // that is actually in state (and therefore in storage), never a stale one.
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
   const selectedPin = pins.find((p) => p.id === selectedPinId) ?? null;
+
+  // Which pins are shown on the map. Read-only over `pins` — narrowing which
+  // markers render is the only effect a filter has; it never touches storage,
+  // the current selection, or the add-pin flow, and (unlike every other piece
+  // of state above) it survives every write untouched: an add/edit/delete/
+  // import never resets it, because it isn't pin data, just a view over it.
+  const [filter, setFilter] = useState<PinFilter>(allPinsFilter);
+  const visiblePins = filterPins(pins, filter);
+  const filterActive = isFilterActive(filter);
+
+  function handleToggleStrength(toggled: LeadStrength) {
+    setFilter((f) => {
+      const strengths = new Set(f.strengths);
+      if (strengths.has(toggled)) {
+        strengths.delete(toggled);
+      } else {
+        strengths.add(toggled);
+      }
+      return { ...f, strengths };
+    });
+  }
+
+  function handleQueryChange(query: string) {
+    setFilter((f) => ({ ...f, query }));
+  }
+
+  function handleClearFilter() {
+    setFilter(allPinsFilter());
+  }
 
   // Set once we've snapshotted an unreadable store, so we snapshot it once per
   // session instead of on every write attempt.
@@ -175,6 +212,13 @@ export default function App() {
     // make the held Undo record stale or collide with it.
     setArmed(false);
     setName('');
+    // A pin saved while a filter is active must still be visible — otherwise
+    // it's on the map (in storage) but not ON the map (no marker), with
+    // nothing telling the user why. Reset rather than leave it silently
+    // hidden (see docs/reviews/filter-search-leads.md F1).
+    if (!matchesFilter(created, filter)) {
+      setFilter(allPinsFilter());
+    }
     // Open the new pin in the editor: you place a lead right after visiting it,
     // so notes are the very next thing you want to write.
     setSelectedPinId(created.id);
@@ -205,8 +249,10 @@ export default function App() {
     // throws rather than silently dropping the edit on an unknown id — including
     // when the re-read store no longer contains the pin being edited.
     let next: Pin[];
+    let updated: Pin;
     try {
-      next = replacePin(storedPinsForWrite(), updatePin(selectedPin, edits));
+      updated = updatePin(selectedPin, edits);
+      next = replacePin(storedPinsForWrite(), updated);
       savePins(storage, next);
     } catch (e) {
       setSaveError(
@@ -221,6 +267,12 @@ export default function App() {
     setImportInfo(null);
     // deleteInfo is NOT cleared here: editing a different pin's fields cannot
     // make the held Undo record stale or collide with it.
+    // An edit (e.g. moving a lead's strength into a hidden bucket) can hide
+    // the very pin whose editor is open. Same reasoning as handleMapClick:
+    // reset rather than leave it silently invisible (F1).
+    if (!matchesFilter(updated, filter)) {
+      setFilter(allPinsFilter());
+    }
   }
 
   /**
@@ -424,6 +476,14 @@ export default function App() {
           </div>
         )}
 
+        <PinFilterBar
+          filter={filter}
+          isActive={filterActive}
+          onToggleStrength={handleToggleStrength}
+          onQueryChange={handleQueryChange}
+          onClear={handleClearFilter}
+        />
+
         {selectedPin ? (
           // key={id}: switching pins remounts the editor so its draft is
           // re-seeded from the newly selected pin instead of carrying over.
@@ -454,10 +514,29 @@ export default function App() {
           onImport={handleImportReplace}
         />
 
-        <p className="sidebar__count">
-          {pins.length} {leadNoun(pins.length)} on the map
-          {pins.length > 0 && !selectedPin && (
-            <> · click a pin to read or edit its notes</>
+        {/* aria-live (not role="status"): the import/delete banners already
+            claim the sole "status" role elsewhere in the sidebar, and
+            getByRole('status') in tests expects exactly one match. A live
+            region without that role still announces filter changes to
+            screen-reader users (see docs/reviews/filter-search-leads.md F6)
+            without colliding with those banner queries. */}
+        <p className="sidebar__count" aria-live="polite">
+          {filterActive ? (
+            visiblePins.length === 0 ? (
+              <>No leads match your filters.</>
+            ) : (
+              <>
+                Showing {visiblePins.length} of {pins.length} {leadNoun(pins.length)}
+                {!selectedPin && <> · click a pin to read or edit its notes</>}
+              </>
+            )
+          ) : (
+            <>
+              {pins.length} {leadNoun(pins.length)} on the map
+              {pins.length > 0 && !selectedPin && (
+                <> · click a pin to read or edit its notes</>
+              )}
+            </>
           )}
         </p>
       </aside>
@@ -475,7 +554,7 @@ export default function App() {
           <MapView
             key={mapEpoch}
             initialView={initialView}
-            pins={pins}
+            pins={visiblePins}
             selectedPinId={selectedPinId}
             onMapClick={handleMapClick}
             onSelectPin={handleSelectPin}

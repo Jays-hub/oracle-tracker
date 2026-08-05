@@ -150,6 +150,69 @@ body,
   color: var(--muted);
 }
 
+/* Filter / search ------------------------------------------------------------ */
+.pin-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.pin-filter__search {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
+.pin-filter__strengths {
+  display: flex;
+  gap: 12px;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.pin-filter__legend {
+  padding: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pin-filter__strength {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.pin-filter__swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.pin-filter__clear {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #2f6fed;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* Pin editor --------------------------------------------------------------- */
 .pin-editor {
   display: flex;
