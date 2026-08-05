@@ -128,9 +128,36 @@ Reviewed 2026-08-04: `docs/reviews/Delete a pin.md`. Findings F1–F6 landed; cl
 
 ---
 
+## Unit 5 — Filter / search leads
+
+**Problem.** As the number of pins grows, the map's "at a glance" promise (`CLAUDE.md`'s Winning
+sentence) degrades: there is no way to ask "just my strong leads" or find a pin by something written in
+its notes short of panning around reading every popup. Parked in "Later" since unit 2's review.
+
+**Done when.** From a clean checkout, with pins of mixed strength and notes saved:
+- A sidebar control lets the user narrow which strengths are shown (strong / weak / failed,
+  independently toggleable) and enter a text query.
+- **Search matches case-insensitively against both the pin's name and its notes.** A restaurant is
+  findable by what happened there, not only by what it's called.
+- Strength selection and the text query combine as AND, not OR: a pin must satisfy both to be visible.
+- **Filtering only changes which pins render as markers.** It never re-fits or otherwise moves the map —
+  Section A's "fit on mount only" rule is untouched, since a filter is a view of the same store, not a
+  new mount.
+- The sidebar names what's filtered ("Showing N of M leads") and offers a one-click way to clear back to
+  showing everything, including from a zero-match state.
+- Filtering never touches `localStorage`, pin data, the current selection, or the add-pin flow — it is
+  read-only and cannot lose or corrupt anything, unlike every other unit so far. Clearing the filters
+  always restores the full set exactly as stored.
+
+**Not in this unit.** A dedicated list view of leads (a second, larger surface — a filterable map is the
+smaller, higher-value slice; a list view is a legitimate future unit but is not required to make the map
+itself filterable). Sorting. Saved/named filters. Fuzzy or ranked search. Filtering by position
+(map-region search) — text and strength only.
+
+---
+
 ## Later — not scheduled
 
-- **Filter or search** by lead strength or note text; a list view of leads.
 - **Persist the map view** across reloads (see Section A's exclusion).
 - `parsePin` accepts `name: ''` while `updatePin` refuses to save it, so such a pin can be loaded but
   not edited until it is renamed (NIT from unit 2's review).
