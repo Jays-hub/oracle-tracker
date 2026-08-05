@@ -9,6 +9,38 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-05 — [decided] Units 6–8 scoped: git-synced storage, multi-view navigation, visual redesign
+
+[decided] Three new units specced in `docs/roadmap.md`, requested directly rather than pulled off the
+"Later" list: a way to use this tracker from more than one device, more than one way to look at the same
+data, and a real design pass instead of default styling. All three are scoped to stay inside `CLAUDE.md`'s
+charter — no server, no accounts, no external API — the storage *mechanism* changes in Unit 6, but nothing
+server-side is added; nothing here is the backend/database/server the standing orders name as drift.
+
+- **Unit 6 — Git-syncable storage.** Swap the storage backend to the File System Access API pointed at a
+  git-tracked file (`data/pins.json`), so committing/pushing/pulling that file *is* the multi-device sync
+  mechanism — no server, no accounts, nothing added to the network surface beyond map tiles. Chromium-only
+  API; `localStorage` stays as the default for anyone who hasn't linked a file, or whose browser lacks the
+  API. Reuses Unit 3B's `parsePin`/replace/backup machinery for the first-link case rather than inventing a
+  new one. Because this changes what `CLAUDE.md`'s own charter text currently says ("persisted to the
+  browser's `localStorage`"), this unit's Done-when includes updating that language — not loosening the
+  "no backend" order, just making it name both mechanisms accurately.
+- **Unit 7 — Multi-view navigation.** A List view alongside the current Map view, both reading the same
+  store and the same Unit 5 filter/search state. Deliberately *not* adding a router dependency for two
+  views sharing one sidebar — plain view-switch state in `App` is enough; revisit only if a third view or
+  a deep-linking need shows up later.
+- **Unit 8 — Visual redesign.** A clean/minimal styling pass — type scale, spacing, a coherent neutral
+  palette — applied consistently across every view, including Unit 7's List view. Sequenced last, after
+  Unit 7, so there are two views to design consistently instead of one now and one later. Must not touch
+  the strong=green/weak=amber/failed=red mapping `CLAUDE.md`'s DONE-WHEN depends on, or regress the
+  `min-width` floor Unit 3A's review added.
+
+Proposed build order: **6 → 7 → 8** — storage first as the riskiest, most foundational change (everything
+else is presentation on top of whatever store shape results); design last since it should cover every view
+that exists by then. Not yet built. Full specs, "Done when" bars, and exclusions in `docs/roadmap.md`.
+
+---
+
 ## 2026-08-05 — [reviewed] [fixed] Unit 5: filter/search leads — review closed
 
 [reviewed] Cold-context adversarial review: `docs/reviews/filter-search-leads.md` (shasum `7181bc8c`).
