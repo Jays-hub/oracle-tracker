@@ -156,7 +156,7 @@ itself filterable). Sorting. Saved/named filters. Fuzzy or ranked search. Filter
 
 ---
 
-## Unit 6 — Persist the map view across reloads
+## Unit 6 A — Persist the map view across reloads
 
 **Problem.** Section A's own "Not in this section" named this as deferred, needing its own answer to a
 conflict it didn't resolve: *"it partly conflicts with fit-on-mount and needs its own answer about which
@@ -191,6 +191,109 @@ but not `dragend`; accepted as an edge case for a mouse/touch-first tool).
 
 Reviewed 2026-08-05: `docs/reviews/persist map view across reloads.md`. Findings F1–F7 landed; closed
 and mergeable.
+
+## Unit 6 B— Git-syncable storage
+
+**Problem.** `localStorage` is one browser profile on one machine. Unit 3B's Export/Import gives a manual
+escape hatch (download a file, upload it back), but it's a *backup* mechanism, not a *sync* one — using
+the tracker from a second device today means remembering to export, moving the file yourself, and
+importing on the other end, every single time. Requested directly: multi-device access, without adding
+the backend/database/server/accounts `CLAUDE.md`'s standing orders name as drift for this project.
+
+**Approach.** The File System Access API (`showOpenFilePicker` / `showSaveFilePicker`) lets the browser
+read and write a real file on disk with the user's permission — no server in between. Point it at a file
+inside this git repo (`data/pins.json`); committing and pushing/pulling that file through the user's
+normal git workflow *is* the sync. The app never talks to git itself — it only reads and writes bytes at a
+path the user chose.
+
+**Done when.** From a clean checkout, in a Chromium browser (Chrome/Edge):
+- A sidebar control ("Link a data file") lets the user pick or create `data/pins.json` via the File System
+  Access API. Once linked, every read and write (add, edit, delete, import/export) goes through that file
+  instead of `localStorage`, via the same read-modify-write discipline the store already uses for every
+  other write (re-read immediately before writing, so a stale tab can't clobber a concurrent one — same
+  rule, new medium).
+- **The link persists across reloads in the same browser.** The `FileSystemFileHandle` is remembered
+  (stored via IndexedDB, still entirely local — not a new external dependency); reconnecting needs at most
+  one permission-confirmation click per session, never a full re-pick of the file.
+- **Linking for the first time reuses Unit 3B's import machinery, not a new one.** If the chosen file is
+  empty/new, seed it from whatever is currently in `localStorage`. If the file already has content (the
+  normal case on a second device, pulled from git), linking behaves exactly like a confirmed import:
+  `parsePin`-validated, named counts, a pre-link backup snapshot via the existing `backupBeforeImport`
+  path — never a silent merge, never a silent discard.
+- **A browser without File System Access support** (feature-detected, not sniffed by UA) falls back to
+  today's `localStorage`-only behavior with no crash and an honest, named message — not a silent no-op
+  that leaves the user wondering why "Link a data file" did nothing.
+- **An unreadable linked file — including one left mid-git-conflict with `<<<<<<<` markers — is treated
+  exactly like a corrupt `localStorage` read is today:** backed up aside, a named error banner, no data
+  loss, no crash.
+- `CLAUDE.md`'s storage description and standing orders are updated to name both mechanisms and to state
+  explicitly that git-file sync is not the backend/database/server/accounts system the charter forbids —
+  so the charter stays accurate instead of reading as if it forbids the very thing just built.
+
+**Not in this unit.** Automatic git operations — commit/push/pull stay manual, run by the user outside the
+app, same as any other tracked file. Real-time/live sync or file-watching while the app is open. A
+merge/conflict-resolution UI for the JSON — a git conflict here is resolved the same way as a conflict in
+any other tracked file, by the user, in their editor or git tool. Non-Chromium support (Firefox/Safari
+lack the API). Removing `localStorage` support — it remains the default for anyone who hasn't linked a
+file.
+
+---
+
+## Unit 7 — Multi-view navigation
+
+**Problem.** Today there is exactly one way to look at your leads: the map. As the pin count grows, the
+map's markers/popups aren't a great surface for scanning — there's no way to review leads as a scannable
+list. Requested directly, and consistent with what Unit 5's review already parked as "a legitimate future
+unit": *"a dedicated list view of leads... a filterable map is the smaller, higher-value slice."*
+
+**Done when.** From a clean checkout, with pins of mixed strength and notes saved:
+- A view switcher lets the user toggle between the existing **Map** view and a new **List** view. The
+  sidebar (filter/search, Backup/Import-Export, Legend) stays available in both — only the main pane
+  switches; switching is pure UI/read state and never touches storage, the current selection, or the
+  add-pin flow.
+- **List view shows every currently-visible pin** — respecting Unit 5's active filter/search exactly as
+  the map does, same AND semantics, same "Showing N of M" wording — as rows: name, strength (color-coded
+  to match the map's palette), and a short notes preview. Clicking a row opens the same `PinEditor` the map
+  uses today; nothing pin-specific is duplicated for the list.
+- A sensible default order (alphabetical by name) so the list isn't presented in arbitrary/insertion
+  order.
+- **Placing a new pin still only happens via the Map view.** Click-to-place is inherently spatial; List is
+  for reviewing and opening leads, not creating them. This is a deliberate narrowing, not a gap to fill
+  later in this unit.
+- No pin data or storage-shape changes — this unit is presentation-only, on top of whichever storage layer
+  is live (today's `localStorage`, or Unit 6's linked file if that's shipped first) — it must not
+  hard-depend on Unit 6 having landed.
+
+**Not in this unit.** URL-based routing or deep links (no stated need yet — plain view-switch state is the
+simpler thing that meets this bar). A dedicated stats/analytics view. Bulk actions from the list (bulk
+delete, etc.). Multi-column/user-configurable sort. A map/list split-screen.
+
+---
+
+## Unit 8 — Visual redesign
+
+**Problem.** The app works but looks like default browser styling, not "a platform" — requested directly:
+a clean/minimal design pass.
+
+**Done when.** From a clean checkout:
+- A defined type scale and spacing scale applied consistently across every view that exists at build
+  time — map sidebar, `PinEditor`, `PinFilterBar`, `ImportExport`, and Unit 7's List view.
+- A cohesive neutral color system — **without** touching the strong=green / weak=amber / failed=red pin
+  mapping `CLAUDE.md`'s DONE-WHEN depends on. The semantic three stay exactly as they are; everything
+  around them (chrome, text, borders, buttons) gets the pass.
+- **No functional regressions.** Every existing interaction — add/edit/delete/filter/import-export, plus
+  Unit 7's view switch — keeps working exactly as before. The existing test suite (component tests query
+  by role/label, not CSS) stays green through the whole pass, plus an in-browser check, since styling bugs
+  are exactly the class of thing tests don't catch.
+- Doesn't regress Unit 3A's `min-width: 240px` floor (the fix for the zoom-goes-`Infinity` bug) or repeat
+  Unit 3B's review-caught bug where a plain class selector silently lost to a class+element selector of
+  higher specificity — worth a specific check given this unit touches CSS broadly.
+- Contrast meets WCAG AA at minimum; focus states stay visible; the existing `aria-live`/`role="status"`
+  regions are restyled, not removed or functionally altered.
+
+**Not in this unit.** New features or interactions. Animation/motion design beyond simple transitions. A
+dark mode (not requested — park it in "Later" if it comes up separately). Icon or illustration work beyond
+what legibility needs.
 
 ---
 
