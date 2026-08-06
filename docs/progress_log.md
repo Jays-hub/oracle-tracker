@@ -9,6 +9,143 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-05 — [reviewed] [fixed] Persist the map view across reloads — review closed
+
+[reviewed] Cold-context adversarial review: `docs/reviews/persist map view across reloads.md` (shasum
+`d7bf24d…`). **Verdict: No.** The core mechanism (a saved view over `initialViewForPins`, independent
+of pin-store health, fail-soft on corruption) was sound, but the "which wins" answer had no way back
+once it went wrong, and the persistence itself silently failed for ordinary gestures. 1 BLOCKER + 2
+MAJOR + 2 MINOR (test-coverage) + 2 MINOR (doc accuracy) + 2 NIT. All 7 substantive findings (F1–F7)
+fixed below; the 2 NITs (zoom upper bound, listener re-attached per render — the latter shared with
+the existing `ClickCapture` pattern, consistency-neutral) deferred, unchanged from the artifact.
+
+[fixed] **BLOCKER (F1) — a saved view won unconditionally and there was no way back to the leads.**
+Reproduced by the reviewer: pan to the mid-Pacific, reload, and the map reopens there — 0 of 2
+markers on screen, sidebar still reading "2 leads on the map," no control anywhere that re-fits. This
+reintroduced the exact defect Unit 3 Section A shipped to fix, permanently. Added a "Show all leads"
+control (`src/App.tsx`, `handleShowAllLeads`), always visible in the sidebar (not gated behind any
+other state — it has to work exactly when everything else is off screen), routed through the same
+`initialViewForPins` + `mapEpoch` remount `handleImportReplace` already uses, and clearing the saved
+view so the recovery — not the position that stranded the user — is what a reload restores from here
+on. New test: "recovers from a stranded view via 'Show all leads', and the recovery survives a
+reload."
+
+[fixed] **MAJOR (F2) — `saveView` wrote longitudes `loadView` would reject.** Leaflet's
+`getCenter()` is unwrapped; a pan past the antimeridian (ordinary use — NYC is only ~600px of
+dragging from it at zoom 3) produced a longitude past ±180, which the load-side range check then
+silently rejected, falling back to the fit with no error. `ClickCapture` already wraps for this exact
+hazard 20 lines away — `ViewPersister` didn't. Fixed: `map.getCenter().wrap()` before handing off
+(`src/components/MapView.tsx`). New test: a pan past the antimeridian, reload, map reopens exactly
+where it was left (wrapped), not re-fit.
+
+[fixed] **MAJOR (F3) — a window resize persisted a view the user never chose.** `moveend` is not a
+proxy for user intent: Leaflet fires it for a resize too (`trackResize` → `invalidateSize`), so the
+"no saved view yet → fit the pins" fallback was a one-shot for most real users, and the most likely
+path into F1 without ever deliberately panning. `ViewPersister` now listens for `dragend` + `zoomend`
+instead of raw `moveend` — the cheapest correct version the reviewer named. Deliberate, documented
+gap: keyboard arrow-key panning (Leaflet's `panBy` fires `moveend` but not `dragend`) is no longer
+persisted; accepted as an edge case not worth chasing for a mouse/touch-first personal tool. New
+test: a bare view change with no drag/zoom gesture (the resize's exact shape) persists nothing.
+
+[fixed] **MINOR (F4) — no test guarded the *pan* half of "pan/zoom".** The reviewer's mutation
+(`moveend` → `zoomend`) killed 0 of 57 tests, because every existing test changed the zoom alongside
+the centre. New test isolates a pure pan (centre changes, zoom doesn't) ended by `dragend`, the real
+terminal event a drag fires — the same mutation, replanted against the fixed code, now fails exactly
+this test.
+
+[fixed] **MINOR (F5) — nothing tied `saveView`'s output range to `loadView`'s accepted range**, which
+is precisely the gap F2 lived in. Closed by F2's fix plus its regression test (an actual round-trip
+through the range Leaflet can produce, not just hand-written in-range fixtures); added a doc comment
+on `PersistedView` in `src/storage/viewStore.ts` naming the wrap contract explicitly so a future
+reader lands on it from either side of the seam.
+
+[fixed] **MINOR (F6) — the decision log claimed an empirical verification that never happened**: both
+branches of "does the mount-time fit itself write a view" were claimed "exercised … confirmed
+empirically," when only one branch is reachable (react-leaflet mounts children, where the listener
+attaches, strictly after the initial fit's `moveend` has already fired and gone unheard — confirmed
+by the reviewer reading `MapContainer.js`). Corrected in place in
+`docs/build_notes/persist map view across reloads.md`, with the original inaccurate text kept
+alongside the correction rather than silently rewritten. Moot regardless post-F3: `ViewPersister` no
+longer listens for `moveend` at all.
+
+[fixed] **MINOR (F7) — a code comment asserted nothing moves the map after mount, which is false**
+and was the exact false premise that hid F3 (`invalidateSize` pans on resize; Popup's `autoPan` can
+too). Reworded in `src/components/MapView.tsx`: nothing in this app's *React state* moves the map;
+Leaflet itself still can.
+
+Re-ran the gate: `npm run typecheck` clean · `npm run lint` clean · `npm test` **163 passed** (10
+files; was 159) · `npm run build` succeeds. **Self-proving — all 4 code-level findings (F1–F4)
+planted, run, restored:** removing the "Show all leads" button/handler fails the F1 test; dropping
+`.wrap()` fails the F2 test; reverting `dragend`+`zoomend` to plain `moveend` fails the F3 test
+specifically (not the others — confirming it's the one test that isolates this exact regression);
+the reviewer's own exact mutation (`dragend`+`zoomend` → `zoomend` alone) now fails exactly the new
+F4 pan-only test — 1 of 163, where before the fix it was 0 of 57.
+
+**In-browser verification was not possible this round** — the Chrome extension connection
+(`tabs_context_mcp`) remained unresponsive across both the build and this fix pass. All fixes are
+verified by the automated gate and by planting-and-restoring the reviewer's own reproductions
+(including their exact F4 mutation) rather than by a live walkthrough. Flagged as the one open item
+for a human to confirm in a real browser before this ships.
+
+Persist the map view across reloads is **done and mergeable**. The escape hatch (F1) means the
+"which wins" answer this unit exists to give — a saved view over fitting the pins — no longer comes
+at the cost of `CLAUDE.md`'s "at a glance" bar in the one state that mattered: being unable to find
+your own leads again.
+
+Next: pick another unit from `docs/roadmap.md`'s "Later" list, or scope a new one.
+
+---
+
+## 2026-08-05 — [built] Persist the map view across reloads
+
+[built] Closes the last item on `docs/roadmap.md`'s "Later" list, and the "which wins" question
+Section A's own acceptance criteria left open: the map now opens on wherever it was last panned/
+zoomed to, instead of re-fitting to every saved pin on every load. Fitting the pins
+(`initialViewForPins`, Section A, unchanged) is now the fallback for when there's no saved position
+yet — first run, or right after a confirmed import, which deliberately clears the saved position
+since it may point at an entirely different set of coordinates than the pins that just replaced it.
+
+Artifacts: `src/storage/viewStore.ts` (`loadView`/`saveView`/`clearView` over a new
+`restaurant-map.view.v1` key) + `src/storage/viewStore.test.ts` (11), `src/components/MapView.tsx`
+(new `ViewPersister` child reporting Leaflet's settled `moveend` position via a new `onViewChange`
+prop), `src/App.tsx` (mount effect prefers a loaded view over the fit; `handleViewChange`;
+`handleImportReplace` clears the stale view), 5 new tests in `src/App.test.tsx`. Decision log:
+`docs/build_notes/persist map view across reloads.md`.
+
+[decided] **A bad/corrupt saved view fails soft (`null`) rather than loud, unlike every other
+boundary in this codebase.** `parsePin`/`loadPins` throw and snapshot on corruption because notes
+are prose that cannot be reconstructed; a pan position has no such property — the correct recovery
+from "the saved view is garbage" is exactly the ordinary fit-to-pins fallback, which is already a
+perfectly good view. Throwing, or wiring up banner/backup machinery to protect a value this
+disposable, would itself be the drift `CLAUDE.md` warns against. Full reasoning in the decision log.
+
+[decided] **Writes are fire-and-forget, wired straight from `onViewChange` to `saveView` with no
+React state in between.** Section A's whole guarantee — nothing after mount can move the map — rests
+on `initialView` being written exactly once. A view-change handler that touched any state React
+re-renders on would be a live wire next to that guarantee; skipping state entirely makes that class
+of regression structurally unreachable rather than merely avoided by convention.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean · `npm test` **159 passed** (10 files; was
+143) · `npm run build` succeeds. **Self-proving — 4 regressions planted, run, restored:** the mount
+effect ignoring the saved view fails 3 tests; `handleImportReplace` skipping `clearView` fails the
+dedicated post-import test (reopens on the stale pre-import position instead of the new pins);
+`loadView` losing its `try/catch` around `JSON.parse` fails both its own unit test and — more
+sharply — crashes the live `<App>` uncaught in the App-level corrupt-view test, exactly the blast
+radius the fail-soft design exists to prevent; `ViewPersister` no longer calling `onViewChange` fails
+the same 3 tests as the first regression. Each caught by exactly the test written to guard it.
+
+**In-browser verification was skipped this round** — the Chrome extension connection
+(`tabs_context_mcp`) timed out repeatedly; rather than keep retrying, proceeded on the strength of
+the automated gate and the 4 planted-and-caught regressions above. Flagged as an open item in the
+decision log's "least confident" section — the reviewer should either do the real pan-reload-restore
+walkthrough themselves or treat it as unverified.
+
+Not marked done — awaiting the review.
+
+Next: `/review persist map view across reloads`.
+
+---
+
 ## 2026-08-05 — [reviewed] [fixed] Unit 5: filter/search leads — review closed
 
 [reviewed] Cold-context adversarial review: `docs/reviews/filter-search-leads.md` (shasum `7181bc8c`).

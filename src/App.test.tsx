@@ -17,6 +17,7 @@ import {
   IMPORT_BACKUP_PREFIX,
   serializePins,
 } from './storage/pinStore';
+import { VIEW_STORAGE_KEY } from './storage/viewStore';
 import { MAP_VIEWPORT, setMapViewport, resetMapViewport } from './test/setup';
 import type { Pin } from './domain/pin';
 
@@ -728,6 +729,223 @@ describe('App — the map opens on the pins', () => {
     // Order-independent: the two original pins are pixel-for-pixel where they
     // were, whatever order Leaflet keeps its markers in.
     expect(markerPositions()).toEqual(expect.arrayContaining(before));
+  });
+});
+
+describe('App — persists the map view across reloads', () => {
+  // The roadmap item this unit closes: a returning user wants the
+  // neighbourhood they were just looking at, not to be zoomed back out to
+  // every lead they've ever saved. Pan the REAL Leaflet map (not just change
+  // React state) — the same technique the filter suite uses to prove the
+  // opposite guarantee (never moved) — so this proves the actual view got
+  // remembered, not merely that a prop was passed somewhere.
+  it('opens on the last pan/zoom instead of re-fitting the pins', () => {
+    seed([alpha, beta]); // near NYC — nowhere near where we're about to pan
+    const map = captureLeafletMap(() => render(<App />));
+
+    act(() => {
+      map.setView([48.8566, 2.3522], 9); // Paris
+    });
+
+    cleanup(); // <- the page reload
+    const reopened = captureLeafletMap(() => render(<App />));
+
+    expect(reopened.getCenter().lat).toBeCloseTo(48.8566, 2);
+    expect(reopened.getCenter().lng).toBeCloseTo(2.3522, 2);
+    expect(reopened.getZoom()).toBe(9);
+    // Panning is a view preference under its own key — the pins themselves,
+    // in their own key, are untouched by it.
+    expect(stored()).toEqual([alpha, beta]);
+  });
+
+  // Independent of pin count: the saved view answers "where was I looking",
+  // not "what is there" — deleting every pin shouldn't discard an otherwise
+  // good position, and there being nothing to fit is exactly when honoring it
+  // matters most.
+  it('honors the saved view even with zero pins', () => {
+    seed([]);
+    const map = captureLeafletMap(() => render(<App />));
+    act(() => {
+      map.setView([35.6762, 139.6503], 11); // Tokyo
+    });
+
+    cleanup();
+    const reopened = captureLeafletMap(() => render(<App />));
+    expect(reopened.getCenter().lat).toBeCloseTo(35.6762, 2);
+    expect(reopened.getCenter().lng).toBeCloseTo(139.6503, 2);
+    expect(reopened.getZoom()).toBe(11);
+  });
+
+  // Independent of pin-store health: a corrupt pins key blocks reading pins,
+  // not the separate, unrelated view key — the two stores must not couple.
+  it('honors the saved view even when the pin store itself is corrupt', () => {
+    seed([alpha]);
+    const map = captureLeafletMap(() => render(<App />));
+    act(() => {
+      map.setView([35.6762, 139.6503], 8); // Tokyo
+    });
+
+    cleanup();
+    window.localStorage.setItem(STORAGE_KEY, '{not valid json');
+    const reopened = captureLeafletMap(() => render(<App />));
+    expect(reopened.getCenter().lat).toBeCloseTo(35.6762, 2);
+    expect(reopened.getZoom()).toBe(8);
+  });
+
+  // A stray/corrupt view record must not crash the app — the same fail-soft
+  // bar loadView's own unit tests hold it to (viewStore.test.ts), exercised
+  // here through the real mount path instead of the pure function directly.
+  it('falls back to fitting the pins when the saved view is corrupt', () => {
+    seed([alpha]);
+    window.localStorage.setItem(VIEW_STORAGE_KEY, '{not valid json');
+
+    render(<App />);
+    expect(markers()).toHaveLength(1);
+    expect(renderedZoom()).toBe(15); // the single-pin fit, unaffected
+  });
+
+  // The defect this design exists to prevent: importing a wholly different
+  // set of leads must not leave the NEXT reload honoring the pre-import
+  // position over the newly-restored pins — the same failure shape as
+  // docs/reviews/Unit 3 Section B - export-import JSON.md F1 ("a confirmed
+  // import never moved the map"), recurring here for the reload right after.
+  it('clears the saved view on import, so the next reload fits the NEW pins, not the old position', async () => {
+    const lisbon: Pin = {
+      id: 'l',
+      name: 'Cervejaria Ramiro',
+      lat: 38.7223,
+      lng: -9.1393,
+      strength: 'strong',
+      notes: '',
+    };
+    seed([alpha, beta]); // NYC-area
+    const map = captureLeafletMap(() => render(<App />));
+    act(() => {
+      map.setView([48.8566, 2.3522], 9); // Paris — nowhere near NYC or Lisbon
+    });
+
+    selectFile(serializePins([lisbon]), 'backup.json');
+    await waitFor(() =>
+      expect(screen.getByText(/replace 2 saved leads with the 1 lead/i)).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+
+    cleanup();
+    const reopened = captureLeafletMap(() => render(<App />));
+    // Fit to the single imported pin — centred on it at street level, NOT
+    // still parked over Paris.
+    expect(reopened.getCenter().lat).toBeCloseTo(38.7223, 2);
+    expect(reopened.getCenter().lng).toBeCloseTo(-9.1393, 2);
+    expect(reopened.getZoom()).toBe(15);
+  });
+
+  function allOnScreen(at: { x: number; y: number }[]): boolean {
+    return at.every(
+      ({ x, y }) => x >= 0 && x <= MAP_VIEWPORT.width && y >= 0 && y <= MAP_VIEWPORT.height,
+    );
+  }
+
+  // F1 (docs/reviews/persist map view across reloads.md): a saved view always
+  // wins over fitting the pins, by design — but before this fix, there was no
+  // way back once that left every lead off screen. This reproduces the exact
+  // trap (pan to the mid-Pacific, reload, get stranded) and then proves the
+  // "Show all leads" escape hatch recovers from it, and that the recovery
+  // itself survives a further reload — otherwise the stranded position would
+  // simply come back the moment the page refreshes again.
+  it('recovers from a stranded view via "Show all leads", and the recovery survives a reload', () => {
+    seed([alpha, beta]); // NYC-area
+    const map = captureLeafletMap(() => render(<App />));
+
+    act(() => {
+      map.setView([0, -150], 5); // mid-Pacific — nowhere near the seeded leads
+      map.fire('dragend');
+      map.fire('zoomend');
+    });
+
+    cleanup();
+    render(<App />); // the reload that would otherwise strand the user here forever
+    // Confirms the setup really does reproduce the trap before claiming to
+    // have recovered from it.
+    expect(allOnScreen(markerPositions())).toBe(false);
+    expect(stored()).toEqual([alpha, beta]); // the leads themselves are untouched, just off screen
+
+    fireEvent.click(screen.getByRole('button', { name: /show all leads/i }));
+    expect(allOnScreen(markerPositions())).toBe(true);
+
+    cleanup();
+    render(<App />);
+    expect(allOnScreen(markerPositions())).toBe(true);
+  });
+
+  // F2: Leaflet's map centre is NOT wrapped into [-180, 180] the way a click
+  // is (ClickCapture above) — pan past the antimeridian and it keeps
+  // accumulating past ±180, which loadView (rightly) rejects as out of
+  // range. Before the fix this silently discarded the save: the stored
+  // record failed validation and the next reload quietly fell back to
+  // fitting the pins instead, with no error anywhere.
+  it('wraps the centre before persisting, so a pan past the antimeridian survives a reload', () => {
+    seed([alpha, beta]);
+    const map = captureLeafletMap(() => render(<App />));
+
+    act(() => {
+      map.setView([40.71, -197.05], 3); // west of the antimeridian, unwrapped
+      map.fire('dragend');
+    });
+
+    const view = JSON.parse(window.localStorage.getItem(VIEW_STORAGE_KEY) as string);
+    expect(view.center[1]).toBeGreaterThanOrEqual(-180);
+    expect(view.center[1]).toBeLessThanOrEqual(180);
+    expect(view.center[1]).toBeCloseTo(162.95, 1); // -197.05 wrapped
+
+    cleanup();
+    const reopened = captureLeafletMap(() => render(<App />));
+    expect(reopened.getCenter().lat).toBeCloseTo(40.71, 1);
+    expect(reopened.getCenter().lng).toBeCloseTo(162.95, 1);
+    expect(reopened.getZoom()).toBe(3);
+  });
+
+  // F3: `moveend` is not a proxy for user intent — Leaflet fires it for a
+  // window resize too (trackResize -> invalidateSize), with no drag and no
+  // zoom change. Before the fix, ViewPersister listened to moveend alone, so
+  // an incidental resize (or an opened devtools pane) would silently freeze
+  // the "no saved view yet, fit the pins" fallback on its very first trigger.
+  // This reproduces that exact shape — a centre change with no zoom change
+  // and no drag/zoom gesture — and confirms it is now ignored.
+  it('does not persist a view from a bare view change with no drag or zoom gesture', () => {
+    seed([alpha, beta]);
+    const map = captureLeafletMap(() => render(<App />));
+    expect(window.localStorage.getItem(VIEW_STORAGE_KEY)).toBeNull();
+
+    act(() => {
+      // Same shape a window resize produces: the view moves (moveend fires)
+      // but nothing dragged and the zoom is unchanged.
+      map.setView([10, 10], map.getZoom());
+    });
+
+    expect(window.localStorage.getItem(VIEW_STORAGE_KEY)).toBeNull();
+  });
+
+  // F4: the reviewer's mutation (moveend -> zoomend) killed 0 of the unit's
+  // own tests, because every one of them changed the zoom alongside the
+  // centre. This isolates a PURE pan — centre changes, zoom does not — ended
+  // by the real terminal event a mouse/touch drag fires (dragend), so a
+  // regression that drops pan persistence (e.g. reverting to zoomend-only,
+  // or back to unguarded moveend) fails this test specifically.
+  it('persists a pure pan — centre changes, zoom does not — once the drag settles', () => {
+    seed([alpha, beta]);
+    const map = captureLeafletMap(() => render(<App />));
+    const zoom = map.getZoom();
+
+    act(() => {
+      map.setView([10, 20], zoom); // centre only
+      map.fire('dragend'); // the terminal event a real drag fires
+    });
+
+    cleanup();
+    const reopened = captureLeafletMap(() => render(<App />));
+    expect(reopened.getCenter().lat).toBeCloseTo(10, 2);
+    expect(reopened.getCenter().lng).toBeCloseTo(20, 2);
+    expect(reopened.getZoom()).toBe(zoom);
   });
 });
 
