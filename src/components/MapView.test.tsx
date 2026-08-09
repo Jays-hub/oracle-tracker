@@ -43,6 +43,7 @@ describe('MapView pin icons', () => {
         selectedPinId={beta.id}
         onMapClick={() => {}}
         onSelectPin={() => {}}
+        onViewChange={() => {}}
       />,
     );
 
