@@ -299,7 +299,5 @@ what legibility needs.
 
 ## Later — not scheduled
 
-- `parsePin` accepts `name: ''` while `updatePin` refuses to save it, so such a pin can be loaded but
-  not edited until it is renamed (NIT from unit 2's review).
-- Memoize `pinIcon` per `(strength, selected)` — every marker's DOM is rebuilt on every render. Harmless
-  at this scale (NIT from unit 2's review).
+Nothing parked here right now — the last three items (persisting the map view, the `parsePin`
+empty-name gap, and memoizing `pinIcon`) are all built/reviewed/fixed; see `docs/progress_log.md`.

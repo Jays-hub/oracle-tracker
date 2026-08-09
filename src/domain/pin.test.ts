@@ -46,6 +46,8 @@ describe('parsePin', () => {
       'nope',
       { ...valid, id: '' }, // empty id
       { ...valid, name: 42 }, // non-string name
+      { ...valid, name: '' }, // empty name
+      { ...valid, name: '   ' }, // whitespace-only name
       { ...valid, lat: 'x' }, // non-numeric lat
       { ...valid, lat: 91 }, // lat out of range
       { ...valid, lng: 200 }, // lng out of range

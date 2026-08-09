@@ -9,6 +9,120 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-06 — [reviewed] [fixed] The two NIT closures below got a cold-context review after all
+
+[reviewed] The entry below framed these two fixes as NIT-level and exempt from `/review`. On reflection
+(and per the reviewer's own F4 finding) that call was wrong: tightening `parsePin` — the single
+validation boundary for `loadPins`, `parseImportPayload`, and Unit 6's planned file-link — is a
+decision-logic change at a persistence boundary, which `.claude/rules/00-process.md`'s "Scope of a unit"
+defines as needing a review, not a mechanical edit. Ran one cold:
+`docs/reviews/uncommitted-2026-08-06-pinicon-parsepin.md` (shasum `3bffb7f5`). **Verdict: yes, with one
+MAJOR caveat** — both NITs were genuinely closed and verified by running (the reviewer independently
+re-ran the suite, planted and reverted the same violations described below), but the `parsePin` tightening
+silently changed the persistence/import contract for previously-loadable data, undocumented. 2 MAJOR + 2
+MINOR + 4 NIT. All addressed:
+
+[fixed] **MAJOR (F1) — tightening `parsePin` turns one stranded pin into a total, unrecoverable-in-app
+store failure.** `loadPins` and `parseImportPayload` both reject their *entire* input on the first
+invalid record, so a store or import file containing one blank-name pin among many now fails to load
+*any* of them — worse than the original complaint (one uneditable pin) for the population it affects.
+Chosen fix: **reject-and-document**, not coerce-to-placeholder (rejected — silently mutates a name the
+user never typed, and breaks `parsePin`'s documented losslessness contract) and not revert-to-permissive
+(rejected — reopens the exact strand this closes). Landed as documentation, not a behavior change: a
+comment at `pin.ts`'s new check names all three consumers and the blast radius explicitly, links to the
+review artifact, and states plainly that this can only happen via data edited outside the app (direct
+`localStorage` editing, or — once Unit 6 lands — hand-editing/merging `data/pins.json`), never through
+the app's own writes.
+
+[fixed] **MAJOR (F2) — the corrupt-load banner dropped `err.cause`, so F1's new failure mode was
+unactionable, while the import path solved this exact problem already.** `ImportExport.tsx`'s
+`describeError` (message + cause's message) is now `src/errors.ts`, a shared helper; `App.tsx`'s two
+load-error sites (`useEffect` mount-load catch, `storedPinsForWrite`'s catch) use it. The banner now
+names the real reason ("...: name must not be empty") instead of the generic "stored data contains an
+invalid pin."
+
+[fixed] **MINOR (F3) — the `pinIcon` memoization shipped with zero coverage for the invariant it
+created.** Nothing in the suite asserted `.pin-marker__dot--selected` at all; the reviewer's planted
+mutation (dropping `selected` from the cache key) passed all 143 tests clean. Added
+`src/components/MapView.test.tsx`: two same-strength pins, one selected, asserting exactly one
+`--selected` dot and correct color on both regardless of shared cached-icon identity. Reran the exact
+planted mutation against the new test: fails (`expected [] to have a length of 1`). Restored, confirmed
+clean.
+
+[decided] **MINOR (F4) — self-exemption from `/review`, and the hook meant to catch that structurally
+can't.** The reviewer explicitly recommended *not* fixing the hook itself inside this change
+(`require_build_note.py`'s `_existing_notes()` checks only whether any note exists in
+`docs/build_notes/`, not whether one is current — with five prior notes on disk it can't fire again for
+the life of the project). Tracked, not fixed here — re-scoping that check, or dropping the enforcement
+claim, is a separate call about the tooling itself.
+
+[fixed] **NIT — trim asymmetry for `name` was undocumented.** `parsePin` validates `name` on `.trim()`
+but returns it unstrimmed (deliberately, for losslessness) — same treatment as `notes`, but the existing
+comment only mentioned `notes`. One comment now covers both, including the consequence: a padded
+imported name loses that padding on its first edit through `PinEditor`.
+
+[decided] **NIT — `setLatLng` still fires on every marker on every render** (a fresh `[pin.lat, pin.lng]`
+array each render defeats react-leaflet's identity check) — **left as-is.** The reviewer confirmed this
+is harmless (no DOM rebuild, repositions to the same point) and offered no concrete minimal fix; adding
+memoization here would be new complexity for a cosmetic perf NIT explicitly called harmless, which
+`.claude/rules/00-process.md`'s "name the drift" standing order weighs against. The prior entry's framing
+below ("every marker rebuilt on every render") overstated what landed — `setIcon` churn is what's fixed
+(verified: 0 calls across no-op re-renders, was N per render); `setLatLng` churn is a separate, unfixed,
+harmless artifact.
+
+[fixed] **NIT — `CLAUDE.md`'s always-loaded "Current status" was stale**: didn't mention Units 6–8 being
+scoped, Unit 6 being in progress, or these two closures. Updated.
+
+[decided] **NIT — "can't collide with Unit 6" holds for code, not for docs.** Confirmed by reading Unit
+6's worktree directly: it touches `ImportExport.tsx`, `pinStore.ts`/`.test.ts`, and adds new
+`fileStorage`/`DataFileLink`/`types` files — none of `pin.ts`, `pin.test.ts`, or `MapView.tsx`. But both
+sessions edit `docs/progress_log.md`, `docs/roadmap.md`, and now `CLAUDE.md`'s status section — a
+guaranteed textual merge conflict at handoff, to be resolved by hand like any other, not avoided.
+
+Re-ran the gate: `npm run typecheck` clean · `npm run lint` clean · `npm test` **144 passed** (10 files;
+was 143/9 — the new `MapView.test.tsx`) · `npm run build` succeeds (87 modules, 315.15 kB JS).
+**Self-proving:** F3's planted mutation (dropping `selected` from the cache key) reintroduced, confirmed
+to fail exactly `MapView.test.tsx`'s new assertion, then reverted — `git diff` shows no leftover markers.
+
+Both NITs remain genuinely closed; the store/import blast-radius trade-off in F1 is now a documented,
+deliberate choice instead of a silent one, and the load-error banner (F2) makes it self-diagnosing instead
+of requiring DevTools guesswork.
+
+---
+
+## 2026-08-06 — [fixed] Two parked NITs closed: `pinIcon` memoization, `parsePin` empty-name gap
+
+Picked up while Unit 6 was being built in a separate session — deliberately scoped to files Unit 6
+doesn't touch, so the two sessions can't collide. Not a unit (mechanical/NIT-level, both already
+specified by a prior review's findings), so no new `/review` cycle.
+
+- **`src/components/MapView.tsx`** — `pinIcon` took a `color` string, so every marker rebuilt its
+  `L.DivIcon` on every render even though only `(strength, selected)` — 6 combinations, ever — determine
+  its contents. Now keyed and cached in a module-level `Map`, called as `pinIcon(pin.strength, selected)`.
+  NIT from `docs/reviews/Unit 2 - notes + editing per pin.md`.
+- **`src/domain/pin.ts`** — `parsePin` accepted `name: ''` (only checked `typeof`) while `createPin`/
+  `updatePin` both reject an empty/whitespace-only name after trim. The gap meant a stored or imported
+  record with an empty name would load, then get stuck: `PinEditor` disables Save until the name is
+  non-empty, so nothing about that pin — not even notes — could be edited until it was renamed. `parsePin`
+  now rejects the same way (`name.trim().length === 0`) at the same boundary as every other corrupt field,
+  same NIT source. Two cases added to `pin.test.ts`'s `rejects invalid shapes` table
+  (`name: ''`, `name: '   '`); confirmed the fix is load-bearing by reverting `pin.ts` alone and rerunning
+  — the new cases fail without it, pass with it.
+
+Both were already proposed verbatim by that review ("Fix: require a non-empty `name` in `parsePin` too" /
+"Memoize `pinIcon` per `(strength, selected)`"), so implementing them directly rather than re-reviewing
+was a judgment call, not a shortcut around Standing Order 1. Removed both from `docs/roadmap.md`'s Later
+list.
+
+Gate: `npm run typecheck` clean · `npm run lint` clean · `npm test` **143 passed** (9 files, same count —
+new assertions landed inside the existing `parsePin` table test, no new `it` blocks) · `npm run build`
+succeeds (86 modules, 315.22 kB JS).
+
+Next: Unit 6 (git-syncable storage) is being built in a separate session — pick up wherever that lands,
+or continue pulling isolated Later-list items if more show up.
+
+---
+
 ## 2026-08-05 — [reviewed] [fixed] Persist the map view across reloads — review closed
 
 [reviewed] Cold-context adversarial review: `docs/reviews/persist map view across reloads.md` (shasum
@@ -143,6 +257,9 @@ walkthrough themselves or treat it as unverified.
 Not marked done — awaiting the review.
 
 Next: `/review persist map view across reloads`.
+
+---
+
 ## 2026-08-05 — [decided] Units 6–8 scoped: git-synced storage, multi-view navigation, visual redesign
 
 [decided] Three new units specced in `docs/roadmap.md`, requested directly rather than pulled off the

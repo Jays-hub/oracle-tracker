@@ -63,11 +63,13 @@ Unit 5 "Filter/search leads" — **built, reviewed, fixes landed**: a sidebar co
 selected lead strengths and/or a case-insensitive text search over name and notes, combining as AND;
 filtering is read-only over storage, the current selection, and the add-pin flow, and never re-fits the
 map. A save made while a filter is active now resets the filter rather than rendering invisibly, so the
-DONE-WHEN "see it rendered" bar holds even mid-filter. "Persist the map view across reloads" —
+DONE-WHEN "see it rendered" bar holds even mid-filter. Unit 6A "Persist the map view across reloads" —
 **built, reviewed, fixes landed**: the map now opens on the last pan/zoom instead of re-fitting to
 every saved pin, with a sidebar "Show all leads" control as the escape hatch back to the fit-to-pins
 view (the review's BLOCKER: a saved view winning unconditionally had no way back otherwise). The
 saved view is wrapped past the antimeridian and only persists on a real drag/zoom gesture, not an
-incidental window resize.
-**Next:** pick from `docs/roadmap.md`'s "Later" list (a list view of leads, the `parsePin` empty-name
-fix, memoizing `pinIcon`) or scope a new unit.
+incidental window resize. Unit 6B "Git-syncable storage", Unit 7 "Multi-view navigation", and Unit 8
+"Visual redesign" are scoped in `docs/roadmap.md`, not yet built. Two parked NITs — `pinIcon`
+memoization and a `parsePin` empty-name validation gap — were closed 2026-08-06, reviewed and fixed
+(`docs/reviews/uncommitted-2026-08-06-pinicon-parsepin.md`); the "Later" list is now empty.
+**Next:** Unit 6B, 7, or 8 from `docs/roadmap.md`, or scope a new unit.
