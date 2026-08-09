@@ -17,17 +17,27 @@ import {
 } from '../domain/mapFit';
 import type { Pin } from '../domain/pin';
 
-// A colored dot marker. `color` comes only from our fixed STRENGTH_COLORS map
-// and `selected` is a boolean, so nothing user-authored reaches the icon HTML.
-function pinIcon(color: string, selected: boolean): L.DivIcon {
+// A colored dot marker. Built only from a pin's strength (which fixes its
+// color) and whether it's selected — a total of LEAD_STRENGTHS.length * 2
+// distinct icons ever exist, so they're cached rather than rebuilt on every
+// render of every marker.
+const iconCache = new Map<string, L.DivIcon>();
+
+function pinIcon(strength: Pin['strength'], selected: boolean): L.DivIcon {
+  const key = `${strength}:${selected}`;
+  const cached = iconCache.get(key);
+  if (cached) return cached;
+
   const cls = `pin-marker__dot${selected ? ' pin-marker__dot--selected' : ''}`;
-  return L.divIcon({
+  const icon = L.divIcon({
     className: 'pin-marker',
-    html: `<span class="${cls}" style="background:${color}"></span>`,
+    html: `<span class="${cls}" style="background:${colorForStrength(strength)}"></span>`,
     iconSize: [MARKER_SIZE_PX, MARKER_SIZE_PX],
     iconAnchor: [MARKER_SIZE_PX / 2, MARKER_SIZE_PX / 2],
     popupAnchor: [0, -12],
   });
+  iconCache.set(key, icon);
+  return icon;
 }
 
 function ClickCapture({ onClick }: { onClick: (lat: number, lng: number) => void }) {
@@ -91,7 +101,7 @@ export function MapView({
         <Marker
           key={pin.id}
           position={[pin.lat, pin.lng]}
-          icon={pinIcon(colorForStrength(pin.strength), pin.id === selectedPinId)}
+          icon={pinIcon(pin.strength, pin.id === selectedPinId)}
           eventHandlers={{ click: () => onSelectPin(pin.id) }}
         >
           <Popup>

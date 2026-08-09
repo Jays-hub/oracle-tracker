@@ -264,7 +264,3 @@ what legibility needs.
 ## Later — not scheduled
 
 - **Persist the map view** across reloads (see Section A's exclusion).
-- `parsePin` accepts `name: ''` while `updatePin` refuses to save it, so such a pin can be loaded but
-  not edited until it is renamed (NIT from unit 2's review).
-- Memoize `pinIcon` per `(strength, selected)` — every marker's DOM is rebuilt on every render. Harmless
-  at this scale (NIT from unit 2's review).

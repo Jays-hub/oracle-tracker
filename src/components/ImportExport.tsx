@@ -2,15 +2,7 @@ import { useRef, useState, type ChangeEvent } from 'react';
 import { serializePins } from '../storage/pinStore';
 import { exportFilename, parseImportPayload } from '../storage/importExport';
 import { leadNoun, type Pin } from '../domain/pin';
-
-/** `err.message`, plus `err.cause`'s if it has one — the specific reason a
- * file was rejected (e.g. which field of which record), not just the
- * boundary's generic "the file contains an invalid pin". */
-function describeError(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
-  const cause = err instanceof Error ? err.cause : undefined;
-  return cause instanceof Error ? `${message}: ${cause.message}` : message;
-}
+import { describeError } from '../errors';
 
 /**
  * Export every pin to a JSON file, or replace the whole store from one.

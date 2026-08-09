@@ -63,6 +63,9 @@ Unit 5 "Filter/search leads" — **built, reviewed, fixes landed**: a sidebar co
 selected lead strengths and/or a case-insensitive text search over name and notes, combining as AND;
 filtering is read-only over storage, the current selection, and the add-pin flow, and never re-fits the
 map. A save made while a filter is active now resets the filter rather than rendering invisibly, so the
-DONE-WHEN "see it rendered" bar holds even mid-filter.
-**Next:** pick from `docs/roadmap.md`'s "Later" list (persist the map view across reloads, a list view
-of leads) or scope a new unit.
+DONE-WHEN "see it rendered" bar holds even mid-filter. Units 6–8 (git-syncable storage, multi-view
+navigation, visual redesign) are scoped in `docs/roadmap.md`; **Unit 6 is in progress in a separate
+session.** Two parked NITs — `pinIcon` memoization and a `parsePin` empty-name validation gap — were
+closed 2026-08-06, reviewed and fixed (`docs/reviews/uncommitted-2026-08-06-pinicon-parsepin.md`).
+**Next:** Unit 6, wherever that session leaves it — or pick another item from `docs/roadmap.md`'s
+"Later" list (currently just persisting the map view across reloads) or scope a new unit.

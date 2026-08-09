@@ -24,6 +24,7 @@ import {
 } from './domain/pinFilter';
 import { backupCorruptStore, loadPins, savePins } from './storage/pinStore';
 import { importPins } from './storage/importExport';
+import { describeError } from './errors';
 
 const storage: Storage = window.localStorage;
 
@@ -121,7 +122,7 @@ export default function App() {
       loaded = loadPins(storage);
       setPins(loaded);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : String(e));
+      setLoadError(describeError(e));
       // Snapshot the unreadable bytes NOW, while they still exist. Without
       // this, the map is empty, the only available action is "add a pin", and
       // that single click would overwrite every unrecoverable note in the store.
@@ -159,9 +160,7 @@ export default function App() {
       if (corruptBackupRef.current === null) {
         corruptBackupRef.current = backupCorruptStore(storage); // throws if it fails
       }
-      setLoadError(
-        loadFailure instanceof Error ? loadFailure.message : String(loadFailure),
-      );
+      setLoadError(describeError(loadFailure));
       return [];
     }
   }
