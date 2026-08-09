@@ -156,7 +156,43 @@ itself filterable). Sorting. Saved/named filters. Fuzzy or ranked search. Filter
 
 ---
 
-## Unit 6 — Git-syncable storage
+## Unit 6 A — Persist the map view across reloads
+
+**Problem.** Section A's own "Not in this section" named this as deferred, needing its own answer to a
+conflict it didn't resolve: *"it partly conflicts with fit-on-mount and needs its own answer about which
+wins."* Without it, every reload re-fits to every saved pin, which is right on a first-ever load but
+wrong for an ordinary working session — zoom into the neighbourhood you're actually visiting, refresh,
+and get yanked back out to a fit over every lead you've ever saved. Built directly from this "Later"
+bullet with no prior spec; the Done-when below is written retroactively from what the review
+(`docs/reviews/persist map view across reloads.md`) actually held it to.
+
+**Done when.** From a clean checkout, with pins saved:
+- **A saved pan/zoom wins over fitting the pins** on the next load, regardless of pin count — the
+  position answers "where was I looking," independent of "what's there."
+- **The saved view is independent of pin-store health**: a corrupt pins key does not block reading or
+  honoring a perfectly good saved view, and vice versa.
+- **A bad/corrupt saved view record fails soft** (falls back to fitting the pins), never crashes the app
+  and never needs its own error banner or backup ceremony — unlike pin data, a lost view preference is
+  fully and cheaply recoverable by refitting.
+- **Only a real user gesture persists a view.** An incidental window resize (Leaflet's `trackResize` ->
+  `invalidateSize` -> `moveend`) must never overwrite — or create — a saved view on its own.
+- **What gets saved is what can be loaded back.** A pan past the antimeridian (Leaflet's `getCenter()` is
+  unwrapped) must still round-trip through a reload, not silently fail validation and fall back to the
+  fit with no error.
+- **There is always a way back.** However the saved-view-wins answer is implemented, the app must offer
+  an in-app control that re-fits to every saved pin — a saved view can never be a one-way door that
+  stranded panning plus a reload cannot recover from.
+- **A confirmed import clears the saved view**, so the reload right after a restore fits the *new* pins,
+  not the pre-import position (the same failure shape as Unit 3 Section B's F1, one step later).
+
+**Not in this unit.** Configuring or disabling the behaviour. A `.v2` migration story for the view key
+(no legacy shape exists yet). Persisting keyboard arrow-key panning (Leaflet's `panBy` fires `moveend`
+but not `dragend`; accepted as an edge case for a mouse/touch-first tool).
+
+Reviewed 2026-08-05: `docs/reviews/persist map view across reloads.md`. Findings F1–F7 landed; closed
+and mergeable.
+
+## Unit 6 B— Git-syncable storage
 
 **Problem.** `localStorage` is one browser profile on one machine. Unit 3B's Export/Import gives a manual
 escape hatch (download a file, upload it back), but it's a *backup* mechanism, not a *sync* one — using
@@ -263,4 +299,5 @@ what legibility needs.
 
 ## Later — not scheduled
 
-- **Persist the map view** across reloads (see Section A's exclusion).
+Nothing parked here right now — the last three items (persisting the map view, the `parsePin`
+empty-name gap, and memoizing `pinIcon`) are all built/reviewed/fixed; see `docs/progress_log.md`.
