@@ -22,15 +22,28 @@ function describeError(err: unknown): string {
  * clicked, and the parent (App) owns the actual store write.
  */
 export function ImportExport({
-  pins,
   getSavedCount,
+  getPinsForExport,
   onImport,
 }: {
-  pins: Pin[];
   /** How many pins are actually in storage right now (null if unreadable) —
    * read fresh at selection time so the confirmation names what a replace
-   * would really destroy, not this tab's possibly-stale `pins` prop. */
-  getSavedCount: () => number | null;
+   * would really destroy, not this tab's possibly-stale `pins` prop.
+   * May return a Promise: Unit 6's file-linked backend has to read the file
+   * to answer, which is inherently async, while the localStorage backend can
+   * answer synchronously — `await`ing either works, since `await` on a
+   * plain value resolves immediately. */
+  getSavedCount: () => number | null | Promise<number | null>;
+  /** The pins to export, read fresh at export time rather than passed as a
+   * static prop. Before Unit 6, `pins` (React state) was always exactly
+   * what was on disk, since App was the only writer of localStorage — but a
+   * linked file expects an external writer (`git pull`, the whole point of
+   * the unit), so exporting stale React state could silently omit pins
+   * pulled since the tab opened, corrupting the one thing this control
+   * exists to make safe (see
+   * docs/reviews/Unit 6 - git syncable storage.md F3). May reject: the
+   * caller shows a named error instead of downloading a broken/partial file. */
+  getPinsForExport: () => Pin[] | Promise<Pin[]>;
   onImport: (pins: Pin[]) => void;
 }) {
   const [pending, setPending] = useState<{
@@ -48,8 +61,16 @@ export function ImportExport({
   // anymore (docs/reviews/Unit 3 Section B - export-import JSON.md F11).
   const selectionRef = useRef(0);
 
-  function handleExport() {
-    const blob = new Blob([serializePins(pins)], { type: 'application/json' });
+  async function handleExport() {
+    setError(null);
+    let exportPins: Pin[];
+    try {
+      exportPins = await getPinsForExport();
+    } catch (err) {
+      setError(`Couldn’t export: ${describeError(err)}.`);
+      return;
+    }
+    const blob = new Blob([serializePins(exportPins)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -72,11 +93,13 @@ export function ImportExport({
     setError(null);
     setPending(null);
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       if (selection !== selectionRef.current) return; // superseded, drop it
       try {
         const imported = parseImportPayload(String(reader.result));
-        setPending({ pins: imported, fileName: file.name, savedCount: getSavedCount() });
+        const savedCount = await getSavedCount();
+        if (selection !== selectionRef.current) return; // superseded while we awaited
+        setPending({ pins: imported, fileName: file.name, savedCount });
       } catch (err) {
         setError(describeError(err));
       }
