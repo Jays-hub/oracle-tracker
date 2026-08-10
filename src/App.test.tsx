@@ -17,9 +17,24 @@ import {
   IMPORT_BACKUP_PREFIX,
   serializePins,
 } from './storage/pinStore';
+import * as fileHandleRegistry from './storage/fileHandleRegistry';
 import { VIEW_STORAGE_KEY } from './storage/viewStore';
 import { MAP_VIEWPORT, setMapViewport, resetMapViewport } from './test/setup';
+import { fakeFileHandle, type FakeFileHandle } from './test/fakeFileHandle';
 import type { Pin } from './domain/pin';
+
+// Unit 6's own fileHandleRegistry.test.ts covers the real IndexedDB
+// round-trip (against a structurally-cloneable stand-in — see that file for
+// why a real FileSystemFileHandle-shaped fake, which has function
+// properties, can't survive fake-indexeddb's clone). App doesn't care how
+// recallFileHandle got its answer, only how it reacts to one, so mocking the
+// module boundary here is the right layer for these tests, not a
+// workaround.
+vi.mock('./storage/fileHandleRegistry', () => ({
+  recallFileHandle: vi.fn().mockResolvedValue(null),
+  rememberFileHandle: vi.fn().mockResolvedValue(undefined),
+  forgetFileHandle: vi.fn().mockResolvedValue(undefined),
+}));
 
 // jsdom does not give us a usable localStorage under this Node build, and App
 // captures `window.localStorage` at module scope — so install a real,
@@ -1172,6 +1187,10 @@ describe('App — export/import replaces the whole store', () => {
     const createObjectURL = vi.spyOn(URL, 'createObjectURL');
     fireEvent.click(screen.getByRole('button', { name: /export as json/i }));
 
+    // Unit 6: export re-reads the active backend rather than serializing
+    // React state synchronously (F3), so the download now lands one tick
+    // after the click.
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
     const blob = createObjectURL.mock.calls[0][0] as Blob;
     await expect(blob.text()).resolves.toBe(serializePins(stored()));
     createObjectURL.mockRestore();
@@ -1253,6 +1272,7 @@ describe('App — filter/search narrows the map', () => {
     const createObjectURL = vi.spyOn(URL, 'createObjectURL');
     fireEvent.click(screen.getByRole('button', { name: /export as json/i }));
 
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
     const blob = createObjectURL.mock.calls[0][0] as Blob;
     await expect(blob.text()).resolves.toBe(serializePins([alpha, beta, gamma]));
     createObjectURL.mockRestore();
@@ -1571,5 +1591,537 @@ describe('App — multi-view navigation (List view)', () => {
 
     switchTo('Map');
     expect(wrapper().hasAttribute('inert')).toBe(false);
+describe('App — Unit 6: sync via a linked data file', () => {
+  // `showOpenFilePicker`/`showSaveFilePicker` don't exist in jsdom by
+  // default — every other test in this file runs with them absent, which is
+  // exactly the "unsupported browser" case, already exercised end-to-end by
+  // every one of the 40+ tests above passing untouched. These tests define
+  // them explicitly to exercise the supported path.
+  beforeEach(() => {
+    window.showOpenFilePicker = vi.fn();
+    window.showSaveFilePicker = vi.fn();
+    // The outer afterEach's vi.restoreAllMocks() clears any mockResolvedValue
+    // set on these between tests (there's no "original" implementation for a
+    // vi.mock-factory function to restore to), so both are re-established
+    // here rather than only where each test first needs a non-default answer.
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(null);
+    vi.mocked(fileHandleRegistry.rememberFileHandle).mockResolvedValue(undefined);
+    vi.mocked(fileHandleRegistry.forgetFileHandle).mockResolvedValue(undefined);
+  });
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'showOpenFilePicker');
+    Reflect.deleteProperty(window, 'showSaveFilePicker');
+  });
+
+  function mockOpenPicker(handle: FakeFileHandle) {
+    window.showOpenFilePicker = vi.fn().mockResolvedValue([handle]);
+  }
+  function mockSavePicker(handle: FakeFileHandle) {
+    window.showSaveFilePicker = vi.fn().mockResolvedValue(handle);
+  }
+
+  const gamma: Pin = {
+    id: 'g',
+    name: 'Gamma Bistro',
+    lat: 41.1456,
+    lng: -8.6108,
+    strength: 'weak',
+    notes: 'From the linked file.',
+  };
+
+  it('shows an honest fallback and keeps working on localStorage when the API is unsupported', () => {
+    Reflect.deleteProperty(window, 'showOpenFilePicker');
+    Reflect.deleteProperty(window, 'showSaveFilePicker');
+    seed([alpha]);
+    render(<App />);
+
+    expect(screen.getByText(/needs chrome or edge/i)).toBeTruthy();
+    expect(markers()).toHaveLength(1); // the app still works, just on localStorage
+  });
+
+  // "If the chosen file is empty/new, seed it from whatever is currently in
+  // localStorage" — nothing to validate or confirm, so no confirmation step.
+  it('links a brand-new empty file by seeding it with the pins currently shown', async () => {
+    seed([alpha, beta]);
+    render(<App />);
+    const handle = fakeFileHandle('');
+    mockSavePicker(handle);
+
+    fireEvent.click(screen.getByRole('button', { name: /create new file/i }));
+
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+    expect(JSON.parse(handle.committed)).toEqual([alpha, beta]);
+    expect(screen.getByRole('status').textContent).toMatch(/seeded with your 2 existing leads/i);
+    expect(stored()).toEqual([alpha, beta]); // the seed write never touches localStorage
+  });
+
+  // The other branch: an existing file's content is an import-replace of a
+  // different medium, reusing parseImportPayload and the same confirm-first
+  // shape Unit 3B's JSON import uses — never a silent replace.
+  it('links an existing file behind a confirmation naming both counts, then routes every write to it', async () => {
+    seed([alpha, beta]);
+    render(<App />);
+    const handle = fakeFileHandle(serializePins([gamma]), { name: 'data/pins.json' });
+    mockOpenPicker(handle);
+
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/replacing 2 currently shown leads with the 1 lead/i),
+      ).toBeTruthy(),
+    );
+    // Nothing committed yet — seeing the confirmation must not touch anything.
+    expect(markers()).toHaveLength(2);
+    expect(handle.committed).toBe(serializePins([gamma]));
+
+    fireEvent.click(screen.getByRole('button', { name: /^link file$/i }));
+
+    await waitFor(() => expect(markers()).toHaveLength(1));
+    expect(screen.getByText(/linked to “data\/pins\.json”/i)).toBeTruthy();
+
+    // The pre-link localStorage data was snapshotted, not silently discarded.
+    const backupKeys = storageKeys().filter((k) => k.startsWith(IMPORT_BACKUP_PREFIX));
+    expect(backupKeys).toHaveLength(1);
+    expect(JSON.parse(window.localStorage.getItem(backupKeys[0]) as string)).toEqual([
+      alpha,
+      beta,
+    ]);
+    expect(stored()).toEqual([alpha, beta]); // localStorage's own key is untouched by the link
+
+    // Now prove writes really go to the file: add a pin and check it lands
+    // in the fake file's committed bytes, not localStorage.
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'New Lead' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    clickMapAt(30, 40);
+
+    await waitFor(() => expect(markers()).toHaveLength(2));
+    const fileContent = JSON.parse(handle.committed) as Pin[];
+    expect(fileContent.map((p) => p.name)).toEqual(
+      expect.arrayContaining(['Gamma Bistro', 'New Lead']),
+    );
+    expect(stored()).toEqual([alpha, beta]); // still untouched post-link
+  });
+
+  it('does not link when the pending confirmation is cancelled', async () => {
+    seed([alpha, beta]);
+    render(<App />);
+    const handle = fakeFileHandle(serializePins([gamma]));
+    mockOpenPicker(handle);
+
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^cancel$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(markers()).toHaveLength(2);
+    expect(screen.queryByText(/linked to/i)).toBeNull();
+    expect(handle.committed).toBe(serializePins([gamma])); // never written to
+  });
+
+  it('does nothing and shows no error when the file picker is cancelled', async () => {
+    seed([alpha]);
+    render(<App />);
+    window.showOpenFilePicker = vi
+      .fn()
+      .mockRejectedValue(new DOMException('The user aborted a request.', 'AbortError'));
+
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+
+    await waitFor(() => expect(window.showOpenFilePicker).toHaveBeenCalled());
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(markers()).toHaveLength(1);
+  });
+
+  // "An unreadable linked file — including one left mid-git-conflict — is
+  // treated exactly like a corrupt localStorage read is today: backed up
+  // aside, a named error banner, no data loss, no crash." Exercised via
+  // reconnect (permission already granted from a past session), which is
+  // where an already-adopted file's content genuinely needs this recovery —
+  // see the decision log for why a corrupt file offered at FIRST link
+  // instead just rejects the link attempt outright, leaving localStorage
+  // untouched, rather than "backing up" a file that was never adopted.
+  it('backs up an unreadable linked file the same way a corrupt localStorage read is handled', async () => {
+    seed([alpha]);
+    const conflicted =
+      '<<<<<<< HEAD\n[]\n=======\n[{"id":"1","name":"x"}]\n>>>>>>> branch';
+    const handle = fakeFileHandle(conflicted, { permission: 'granted' });
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(handle);
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toMatch(/couldn.t read saved pins/i),
+    );
+    expect(markers()).toHaveLength(0); // the linked file (empty/unreadable), not localStorage's alpha
+    const backupKeys = storageKeys().filter((k) => k.startsWith(CORRUPT_BACKUP_PREFIX));
+    expect(backupKeys).toHaveLength(1);
+    expect(window.localStorage.getItem(backupKeys[0])).toBe(conflicted);
+  });
+
+  // "The link persists across reloads... reconnecting needs at most one
+  // permission-confirmation click per session."
+  it('shows a Reconnect control for a remembered handle needing permission, and adopts it on click', async () => {
+    seed([alpha]);
+    const fromFile: Pin = {
+      id: 'f',
+      name: 'From File',
+      lat: 10,
+      lng: 10,
+      strength: 'strong',
+      notes: '',
+    };
+    const handle = fakeFileHandle(serializePins([fromFile]), {
+      permission: 'prompt',
+      requestResult: 'granted',
+    });
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(handle);
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/this browser was linked to “pins\.json”/i)).toBeTruthy(),
+    );
+    // Still showing localStorage's pin until an explicit reconnect click —
+    // permission is never auto-requested without a user gesture.
+    fireEvent.click(markers()[0]);
+    expect(screen.getByDisplayValue('Alpha Cafe')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }));
+
+    fireEvent.click(screen.getByRole('button', { name: /^reconnect$/i }));
+
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+    fireEvent.click(markers()[0]);
+    expect(screen.getByDisplayValue('From File')).toBeTruthy();
+  });
+
+  it('surfaces a named error and keeps the Reconnect control when permission is refused', async () => {
+    seed([alpha]);
+    const handle = fakeFileHandle('[]', { permission: 'prompt', requestResult: 'denied' });
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(handle);
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^reconnect$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toMatch(/not granted/i),
+    );
+    expect(markers()).toHaveLength(1); // still on localStorage
+    expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeTruthy(); // can retry
+  });
+
+  // A hard read failure on an ALREADY-linked file (permission revoked, the
+  // file moved or was deleted mid-session) is deliberately NOT the same as a
+  // denied reconnect at startup: there's no safe automatic fallback to
+  // localStorage here, because the user believes writes are going to the
+  // file, and silently rerouting one write to a different backend than the
+  // one they think is active would be a worse surprise than a refused write.
+  // The write must be refused with a named error and must not silently
+  // succeed against a treated-as-empty file, which would look like data loss.
+  it('refuses a write and names the failure, rather than silently switching backends, when the linked file becomes unreadable mid-session', async () => {
+    seed([alpha]);
+    render(<App />);
+    const handle = fakeFileHandle(serializePins([gamma]));
+    mockOpenPicker(handle);
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^link file$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^link file$/i }));
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+
+    // Simulate permission being revoked (or the file being moved/deleted)
+    // between linking and the next write.
+    handle.getFile = () => Promise.reject(new Error('NotAllowedError'));
+
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Should Not Save' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    clickMapAt(30, 40);
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toMatch(/could not read the linked file/i),
+    );
+    expect(markers()).toHaveLength(1); // the new pin was not added
+    expect(stored()).toEqual([alpha]); // and localStorage was never silently used instead
+  });
+
+  // F7 (docs/reviews/Unit 6 - git syncable storage.md): only "add" had
+  // coverage against a linked file before this — edit, delete, and undo were
+  // exercised only against localStorage.
+  it('routes edit, delete, and undo through the linked file too, never touching localStorage', async () => {
+    seed([alpha]);
+    render(<App />);
+    const handle = fakeFileHandle(serializePins([gamma]));
+    mockOpenPicker(handle);
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^link file$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^link file$/i }));
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+    expect(markers()).toHaveLength(1);
+
+    // Edit.
+    fireEvent.click(markers()[0]);
+    fireEvent.change(notesBox(), { target: { value: 'Edited via the linked file.' } });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() =>
+      expect((JSON.parse(handle.committed) as Pin[])[0].notes).toBe(
+        'Edited via the linked file.',
+      ),
+    );
+    expect(stored()).toEqual([alpha]); // localStorage untouched throughout
+
+    // Delete (two clicks: arm, then confirm).
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^delete lead$/i }));
+    await waitFor(() => expect(markers()).toHaveLength(0));
+    expect(JSON.parse(handle.committed)).toEqual([]);
+    expect(stored()).toEqual([alpha]);
+
+    // Undo.
+    fireEvent.click(screen.getByRole('button', { name: /^undo$/i }));
+    await waitFor(() => expect(markers()).toHaveLength(1));
+    const restored = JSON.parse(handle.committed) as Pin[];
+    expect(restored[0].notes).toBe('Edited via the linked file.');
+    expect(stored()).toEqual([alpha]);
+  });
+
+  // F1: a hard read failure on the linked file during an import-replace must
+  // hard-abort — no write, no false "nothing was saved before this import"
+  // claim — the same way a failed backupBeforeImport aborts the localStorage
+  // path. Before the fix this destroyed the file's contents with no
+  // snapshot while telling the user nothing was lost.
+  it('refuses to import over a linked file it cannot read, rather than destroying it with no backup', async () => {
+    seed([alpha]);
+    render(<App />);
+    const handle = fakeFileHandle(serializePins([beta]));
+    mockOpenPicker(handle);
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^link file$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^link file$/i }));
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+    const linkedRaw = handle.committed;
+    // Linking itself already snapshotted the pre-link localStorage content —
+    // capture that count so the assertion below is about whether the FAILED
+    // import added a NEW backup, not about there being zero total.
+    const backupKeysBeforeImport = storageKeys().filter((k) => k.startsWith(IMPORT_BACKUP_PREFIX));
+
+    handle.getFile = () => Promise.reject(new Error('NotReadableError'));
+
+    selectFile(serializePins([gamma]), 'incoming.json');
+    await waitFor(() => screen.getByRole('button', { name: /^replace$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toMatch(/could not read the linked file/i),
+    );
+    expect(handle.committed).toBe(linkedRaw); // the file was NOT overwritten
+    expect(screen.queryByText(/nothing was saved before this import/i)).toBeNull();
+    const backupKeysAfterImport = storageKeys().filter((k) => k.startsWith(IMPORT_BACKUP_PREFIX));
+    expect(backupKeysAfterImport).toEqual(backupKeysBeforeImport); // no new snapshot from a failed read
+  });
+
+  // F1's positive twin: a successful import-replace against a linked file
+  // DOES snapshot the file's previous content before overwriting it.
+  it('backs up the linked file’s previous content before a confirmed import replaces it', async () => {
+    seed([alpha]);
+    render(<App />);
+    const handle = fakeFileHandle(serializePins([beta]));
+    mockOpenPicker(handle);
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^link file$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^link file$/i }));
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+    // Linking itself already snapshotted localStorage's pre-link content
+    // under this same prefix — isolate the NEW key the import adds.
+    const backupKeysBeforeImport = storageKeys().filter((k) => k.startsWith(IMPORT_BACKUP_PREFIX));
+
+    selectFile(serializePins([gamma]), 'incoming.json');
+    await waitFor(() => screen.getByRole('button', { name: /^replace$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^replace$/i }));
+
+    await waitFor(() => expect(JSON.parse(handle.committed)).toEqual([gamma]));
+    const newBackupKeys = storageKeys()
+      .filter((k) => k.startsWith(IMPORT_BACKUP_PREFIX))
+      .filter((k) => !backupKeysBeforeImport.includes(k));
+    expect(newBackupKeys).toHaveLength(1);
+    expect(JSON.parse(window.localStorage.getItem(newBackupKeys[0]) as string)).toEqual([beta]);
+    expect(stored()).toEqual([alpha]); // localStorage's own key, untouched by the linked import
+  });
+
+  // F2: a remembered handle whose permission is still granted but whose file
+  // can no longer be read (moved, deleted, a repo re-cloned elsewhere) must
+  // NOT be adopted — adopting it used to hide every localStorage pin behind
+  // an empty, unusable, un-escapable "linked" state.
+  it('does not adopt a remembered file it cannot read at startup, and keeps localStorage active', async () => {
+    seed([alpha]);
+    const handle = fakeFileHandle(serializePins([gamma]), { permission: 'granted' });
+    handle.getFile = () => Promise.reject(new Error('NotFoundError'));
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(handle);
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toMatch(/couldn.t read the linked file/i),
+    );
+    expect(markers()).toHaveLength(1); // localStorage's alpha, not hidden
+    // Not adopted as the active backend — "This browser WAS linked to..."
+    // (the Reconnect prompt) is expected and asserted below; the distinct
+    // "Linked to X. Every read and write goes through this file" status line
+    // must NOT be showing, since nothing was actually adopted.
+    expect(screen.queryByText(/every read and write goes through this file/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeTruthy(); // escapable
+
+    // And localStorage is genuinely still the active backend, not a refused one.
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Still Works' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    clickMapAt(30, 40);
+    expect(markers()).toHaveLength(2);
+    expect(stored().map((p) => p.name)).toContain('Still Works');
+  });
+
+  // F3: export must read the linked file fresh, not serialize stale React
+  // state — a linked file expects an external writer (`git pull`), so
+  // exporting `pins` could silently omit everything pulled since the tab
+  // opened.
+  it('exports the linked file’s current content, including a change made outside the app', async () => {
+    seed([alpha]);
+    render(<App />);
+    const handle = fakeFileHandle(serializePins([gamma]));
+    mockOpenPicker(handle);
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^link file$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^link file$/i }));
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+
+    // Simulate an external `git pull` changing the file after the tab opened
+    // — React state (`pins`) still only knows about gamma.
+    const pulled = serializePins([gamma, { ...beta, id: 'pulled' }]);
+    handle.getFile = async () => new File([pulled], 'pins.json', { type: 'application/json' });
+
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL');
+    fireEvent.click(screen.getByRole('button', { name: /export as json/i }));
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    await expect(blob.text()).resolves.toBe(pulled);
+    createObjectURL.mockRestore();
+  });
+
+  it('shows a named error and downloads nothing when the linked file can’t be read at export time', async () => {
+    seed([alpha]);
+    render(<App />);
+    const handle = fakeFileHandle(serializePins([gamma]));
+    mockOpenPicker(handle);
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^link file$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^link file$/i }));
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+
+    handle.getFile = () => Promise.reject(new Error('NotReadableError'));
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL');
+
+    fireEvent.click(screen.getByRole('button', { name: /export as json/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toMatch(/couldn.t export/i),
+    );
+    expect(createObjectURL).not.toHaveBeenCalled();
+    createObjectURL.mockRestore();
+  });
+
+  // F9: with BOTH localStorage and the linked file corrupt in the same
+  // session, the banner must name the key that actually matches its own
+  // message — not whichever ref happened to be set first.
+  it('pairs the load-error banner with the backup key for whichever backend actually failed', async () => {
+    window.localStorage.setItem(STORAGE_KEY, 'not json');
+    const conflicted = '<<<<<<< HEAD\n[]\n=======\n[{"id":"1"}]\n>>>>>>> branch';
+    const handle = fakeFileHandle(conflicted, { permission: 'granted' });
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(handle);
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+
+    // Both backends really did back their own corrupt bytes up in this
+    // session — both under the same CORRUPT_BACKUP_PREFIX (they're
+    // distinguished only by timestamp, not by which backend they came from).
+    const corruptKeys = storageKeys().filter((k) => k.startsWith(CORRUPT_BACKUP_PREFIX));
+    expect(corruptKeys).toHaveLength(2);
+    const fileBackupKey = corruptKeys.find(
+      (k) => window.localStorage.getItem(k) === conflicted,
+    );
+    expect(fileBackupKey).toBeDefined();
+
+    // The file is what actually ended up live (it was adopted last, and its
+    // content is what the current banner message is about) — the banner
+    // must name ITS key, not localStorage's earlier one.
+    const banner = screen.getByRole('alert').textContent ?? '';
+    expect(banner).toContain(fileBackupKey as string);
+  });
+
+  // F8: once linked, Unlink is the only in-app way back to localStorage.
+  it('forgets the link on Unlink and falls back to localStorage’s own content', async () => {
+    seed([alpha]);
+    render(<App />);
+    const handle = fakeFileHandle(serializePins([gamma]));
+    mockOpenPicker(handle);
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+    await waitFor(() => screen.getByRole('button', { name: /^link file$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^link file$/i }));
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+    expect(markers()).toHaveLength(1); // gamma, from the file
+
+    fireEvent.click(screen.getByRole('button', { name: /^unlink$/i }));
+
+    await waitFor(() => expect(markers()).toHaveLength(1));
+    expect(screen.queryByText(/linked to/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /choose existing file/i })).toBeTruthy();
+    fireEvent.click(markers()[0]);
+    expect(screen.getByDisplayValue('Alpha Cafe')).toBeTruthy(); // back to localStorage's alpha
+
+    // And a subsequent write goes to localStorage again, not the (now
+    // forgotten) file.
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }));
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Post-Unlink' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    clickMapAt(30, 40);
+    expect(stored().map((p) => p.name)).toContain('Post-Unlink');
+    expect(JSON.parse(handle.committed).map((p: Pin) => p.name)).not.toContain('Post-Unlink');
+  });
+});
+
+// F13 (docs/reviews/Unit 6 - git syncable storage.md): every write handler
+// is declared `async` so it can also serve a linked file, on the bet that
+// the localStorage (`else`) branch never contains an executed `await` — see
+// the decision log's Assumption 1. Dozens of tests above incidentally depend
+// on that (a synchronous `expect(stored())` right after `fireEvent.click`,
+// no `await`/`waitFor`), but the invariant itself had no explicit, named
+// guard — only a comment (`.claude/rules/00-process.md`: "prose is not
+// mechanism"). This test exists so a future `await` accidentally added to
+// that branch fails loudly and specifically, not just as noise somewhere in
+// the suite.
+describe('App — the localStorage write path stays synchronous (Unit 6 Assumption 1)', () => {
+  it('commits an add to localStorage before the click handler yields, with no await/waitFor', () => {
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Sync Check' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    clickMapAt(30, 40);
+
+    // No await/waitFor above this line: if a future edit adds an executed
+    // `await` to handleMapClick's localStorage branch, the write would not
+    // have landed yet here and this assertion would fail.
+    expect(stored().map((p) => p.name)).toEqual(['Sync Check']);
+    expect(markers()).toHaveLength(1);
   });
 });

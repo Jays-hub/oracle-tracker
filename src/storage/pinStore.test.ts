@@ -1,10 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   loadPins,
+  parsePinsPayload,
   savePins,
   serializePins,
+  serializePinsForFile,
   backupCorruptStore,
   backupBeforeImport,
+  backupRawAsCorrupt,
+  backupRawBeforeReplace,
   STORAGE_KEY,
   CORRUPT_BACKUP_PREFIX,
   IMPORT_BACKUP_PREFIX,
@@ -70,6 +74,26 @@ describe('pinStore round-trip', () => {
         }) as Pin,
     );
     expect(serializePins(reordered)).toBe(serializePins(pins));
+  });
+});
+
+describe('serializePinsForFile (Unit 6)', () => {
+  // F4 (docs/reviews/Unit 6 - git syncable storage.md): the linked file must
+  // NOT be one minified line — git merges line-by-line, so a single-line
+  // file guarantees a conflict on any two concurrent edits.
+  it('pretty-prints with one lead spanning multiple lines, unlike serializePins', () => {
+    const pretty = serializePinsForFile(pins);
+    expect(pretty).not.toBe(serializePins(pins));
+    expect(pretty.split('\n').length).toBeGreaterThan(pins.length);
+    expect(pretty.endsWith('\n')).toBe(true);
+  });
+
+  it('round-trips losslessly through parsePinsPayload, same as serializePins', () => {
+    expect(parsePinsPayload(serializePinsForFile(pins))).toEqual(pins);
+  });
+
+  it('is deterministic and key-order independent, same as serializePins', () => {
+    expect(serializePinsForFile(pins)).toBe(serializePinsForFile(pins));
   });
 });
 
@@ -319,5 +343,64 @@ describe('backupBeforeImport', () => {
       k.startsWith(CORRUPT_BACKUP_PREFIX),
     );
     expect(corruptKeys).toHaveLength(1);
+  });
+});
+
+describe('parsePinsPayload (Unit 6: the boundary a linked file goes through too)', () => {
+  // loadPins is now a thin wrapper: parsePinsPayload(storage.getItem(...)).
+  // These pin the boundary itself so a file-sourced caller can rely on it.
+  it('mirrors loadPins exactly when fed the same raw bytes', () => {
+    const raw = serializePins(pins);
+    expect(parsePinsPayload(raw)).toEqual(loadPins(fakeStorage(raw)));
+  });
+
+  it('null reads as [] (localStorage’s absent-key case)', () => {
+    expect(parsePinsPayload(null)).toEqual([]);
+  });
+
+  // A git-conflict-mangled file is exactly this case: `<<<<<<< HEAD` etc. is
+  // not valid JSON, so it fails the same way any other corrupt bytes do —
+  // no special-casing needed for Unit 6's "mid-git-conflict" scenario.
+  it('rejects git-conflict-marker bytes as invalid JSON, same as any other corruption', () => {
+    const conflicted = '<<<<<<< HEAD\n[]\n=======\n[{"id":"1"}]\n>>>>>>> branch';
+    expect(() => parsePinsPayload(conflicted)).toThrow(PinStoreError);
+  });
+
+  it('rejects an empty string rather than silently treating it as no pins', () => {
+    // Only `null` (localStorage's absent key) is "nothing stored yet". An
+    // empty string is anomalous — a truncated or wiped file, say — and
+    // should surface as corrupt like any other unparseable content, not
+    // silently read as an empty store.
+    expect(() => parsePinsPayload('')).toThrow(PinStoreError);
+  });
+});
+
+describe('backupRawAsCorrupt / backupRawBeforeReplace (Unit 6: file-sourced bytes)', () => {
+  const raw = serializePins(pins);
+
+  it('backupRawAsCorrupt writes the given bytes under CORRUPT_BACKUP_PREFIX, unlike backupCorruptStore it does not read storage itself', () => {
+    const s = fakeStorage(); // nothing in the main key at all
+    const key = backupRawAsCorrupt(s, raw, () => 0);
+    expect(key).toBe(`${CORRUPT_BACKUP_PREFIX}1970-01-01T00:00:00.000Z`);
+    expect(s.data.get(key)).toBe(raw);
+  });
+
+  it('backupRawAsCorrupt throws PinStoreError when the copy cannot be written', () => {
+    const s = fakeStorage();
+    s.setItem = () => {
+      throw new Error('QuotaExceededError');
+    };
+    expect(() => backupRawAsCorrupt(s, raw, () => 0)).toThrow(PinStoreError);
+  });
+
+  it('backupRawBeforeReplace writes under IMPORT_BACKUP_PREFIX and prunes like backupBeforeImport', () => {
+    const s = fakeStorage();
+    const timestamps = Array.from({ length: MAX_IMPORT_BACKUPS + 1 }, (_, i) => i * 1000);
+    for (const t of timestamps) {
+      backupRawBeforeReplace(s, raw, () => t);
+    }
+    const keys = Array.from(s.data.keys()).filter((k) => k.startsWith(IMPORT_BACKUP_PREFIX));
+    expect(keys).toHaveLength(MAX_IMPORT_BACKUPS);
+    expect(keys.sort()[0]).not.toContain('1970-01-01T00:00:00.000Z'); // oldest pruned
   });
 });

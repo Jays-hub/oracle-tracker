@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { MapView } from './components/MapView';
 import { AddPinForm } from './components/AddPinForm';
 import { PinEditor } from './components/PinEditor';
@@ -7,6 +7,7 @@ import { ImportExport } from './components/ImportExport';
 import { PinFilterBar } from './components/PinFilterBar';
 import { PinList } from './components/PinList';
 import { ViewSwitcher, type MainView } from './components/ViewSwitcher';
+import { DataFileLink } from './components/DataFileLink';
 import {
   createPin,
   leadNoun,
@@ -24,6 +25,32 @@ import {
   matchesFilter,
   type PinFilter,
 } from './domain/pinFilter';
+import {
+  backupCorruptStore,
+  backupBeforeImport,
+  backupRawAsCorrupt,
+  backupRawBeforeReplace,
+  loadPins,
+  parsePinsPayload,
+  savePins,
+  serializePinsForFile,
+  PinStoreError,
+} from './storage/pinStore';
+import { importPins, parseImportPayload } from './storage/importExport';
+import {
+  createNewFile,
+  isFileSystemAccessSupported,
+  pickExistingFile,
+  queryReadWritePermission,
+  readFile,
+  requestReadWritePermission,
+  writeFile,
+} from './storage/fileStorage';
+import {
+  forgetFileHandle,
+  recallFileHandle,
+  rememberFileHandle,
+} from './storage/fileHandleRegistry';
 import { backupCorruptStore, loadPins, savePins } from './storage/pinStore';
 import { importPins } from './storage/importExport';
 import { describeError } from './errors';
@@ -34,6 +61,17 @@ const storage: Storage = window.localStorage;
 export default function App() {
   const [pins, setPins] = useState<Pin[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Which backend produced the current loadError, so the banner below can
+  // pair the right rescue-backup key with the right message instead of
+  // guessing from ref presence (see docs/reviews/Unit 6 - git syncable
+  // storage.md F9 — the old `corruptBackupRef.current ?? fileCorruptBackupRef
+  // .current` fallback could show the wrong key when both had failed in the
+  // same session). 'file-unreadable' is Unit 6's hard-read-failure case
+  // (F2): nothing is corrupt, there's just nothing to back up from — see
+  // adoptLinkedFile.
+  const [loadErrorBackend, setLoadErrorBackend] = useState<
+    'localStorage' | 'file-corrupt' | 'file-unreadable' | null
+  >(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   // Set once an import has actually replaced the store, so the sidebar can
   // say where the pre-import snapshot went (the only undo for a replace).
@@ -68,14 +106,16 @@ export default function App() {
   // handleImportReplace, which clears it deliberately).
   const [initialView, setInitialView] = useState<InitialView | null>(null);
 
-  // Bumped only by a confirmed import, never by the mount effect or an
-  // ordinary save. `MapView` is keyed by this: changing it forces React to
-  // unmount and remount MapView, which is what makes react-leaflet construct
-  // a brand-new map from the freshly recomputed `initialView` below — the fit
-  // is still a mount-time-only event (Section A's rule), it's just that a
-  // whole-store replace is deliberately treated as a new mount, not a save.
-  // Without this, a confirmed import leaves the map parked on the pre-import
-  // view with every restored pin off screen until the next reload (see
+  // Bumped only by a confirmed import (or, Unit 6, linking/reconnecting a
+  // file — both replace the whole visible set the same way an import does),
+  // never by the mount effect or an ordinary save. `MapView` is keyed by
+  // this: changing it forces React to unmount and remount MapView, which is
+  // what makes react-leaflet construct a brand-new map from the freshly
+  // recomputed `initialView` below — the fit is still a mount-time-only event
+  // (Section A's rule), it's just that a whole-store replace is deliberately
+  // treated as a new mount, not a save. Without this, a confirmed import
+  // leaves the map parked on the pre-import view with every restored pin off
+  // screen until the next reload (see
   // docs/reviews/Unit 3 Section B - export-import JSON.md F1).
   const [mapEpoch, setMapEpoch] = useState(0);
 
@@ -124,6 +164,32 @@ export default function App() {
   const visiblePins = filterPins(pins, filter);
   const filterActive = isFilterActive(filter);
 
+  // Unit 6: once set, every read/write goes through this file instead of
+  // localStorage. Null (the default, and the only mode before this unit)
+  // means "use localStorage", exactly as every earlier unit's tests assume.
+  const [linkedHandle, setLinkedHandle] = useState<FileSystemFileHandle | null>(null);
+  // A handle recalled from a past session (IndexedDB) whose permission needs
+  // one fresh user-gesture click to confirm — browsers don't promise
+  // permission survives a reload, so this is never auto-requested.
+  const [reconnectHandle, setReconnectHandle] = useState<FileSystemFileHandle | null>(null);
+  // Set while linking to a file that already has content: mirrors Unit 3B's
+  // import-confirmation shape exactly, since adopting an existing file's
+  // content is an import-replace of a different medium, not a new mechanism.
+  const [pendingFileLink, setPendingFileLink] = useState<{
+    handle: FileSystemFileHandle;
+    pins: Pin[];
+    /** The file's raw bytes as read at pick time — kept so a confirmed link
+     * can skip rewriting a file whose content is already in canonical form
+     * (see handleConfirmFileLink, F10). */
+    raw: string;
+    fileName: string;
+    savedCount: number | null;
+  } | null>(null);
+  const [fileLinkError, setFileLinkError] = useState<string | null>(null);
+  // Dedup, same idea as corruptBackupRef below: back up an unreadable linked
+  // file's bytes once per session, not on every write attempt against it.
+  const fileCorruptBackupRef = useRef<string | null>(null);
+
   function handleToggleStrength(toggled: LeadStrength) {
     setFilter((f) => {
       const strengths = new Set(f.strengths);
@@ -157,6 +223,8 @@ export default function App() {
       loaded = loadPins(storage);
       setPins(loaded);
     } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+      setLoadErrorBackend('localStorage');
       setLoadError(describeError(e));
       // Snapshot the unreadable bytes NOW, while they still exist. Without
       // this, the map is empty, the only available action is "add a pin", and
@@ -218,6 +286,314 @@ export default function App() {
   }
 
   /**
+   * Read a linked file, parse it, and adopt it as the active backend —
+   * replacing whatever's currently shown, the same way a confirmed import
+   * does. Used for both silent reconnect (permission already granted, either
+   * at mount or after a Reconnect click) — never for the first-time link
+   * flow, which has its own seed-vs-confirm branching (`linkFile` below).
+   *
+   * `useCallback([])`: every dependency here (setters, the ref, module-level
+   * imports) is referentially stable, so an empty array is accurate, not a
+   * lie — it's what lets the mount effect below list this function as a
+   * dependency without an infinite-effect risk or a disabled lint rule.
+   */
+  const adoptLinkedFile = useCallback(async (handle: FileSystemFileHandle) => {
+    // Two failure modes that look similar but get deliberately different
+    // treatment (decision log Assumption 4). A HARD read failure (the file
+    // was moved/deleted, permission was silently revoked) means there is
+    // nothing safe to adopt: adopting anyway would hide every localStorage
+    // pin behind an empty "linked" file with every write refused and no
+    // escape (see docs/reviews/Unit 6 - git syncable storage.md F2). Stay on
+    // whatever's currently shown and surface Reconnect again so the user can
+    // retry with a user gesture.
+    let raw: string;
+    try {
+      raw = await readFile(handle);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+      setLoadErrorBackend('file-unreadable');
+      setReconnectHandle(handle);
+      return;
+    }
+
+    // Readable bytes that fail validation (corrupt JSON, a git-conflict-
+    // mangled file) — unlike a hard read failure, this content genuinely IS
+    // the file, so it's adopted (empty) exactly like a corrupt localStorage
+    // read: backed up aside, named error, no data loss, no crash.
+    let loaded: Pin[] = [];
+    try {
+      loaded = parsePinsPayload(raw);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+      setLoadErrorBackend('file-corrupt');
+      if (fileCorruptBackupRef.current === null) {
+        try {
+          fileCorruptBackupRef.current = backupRawAsCorrupt(storage, raw);
+        } catch (backupError) {
+          setSaveError(
+            `Couldn’t back up the unreadable linked file: ${
+              backupError instanceof Error ? backupError.message : String(backupError)
+            }.`,
+          );
+        }
+      }
+    }
+    setLinkedHandle(handle);
+    setReconnectHandle(null);
+    setPins(loaded);
+    setInitialView(initialViewForPins(loaded));
+    setMapEpoch((epoch) => epoch + 1);
+  }, []);
+
+  // Unit 6: on mount, check whether this browser remembers a linked file
+  // from a past session. Permission is not guaranteed to survive a reload,
+  // so this only auto-adopts when it's still granted; otherwise it surfaces
+  // a Reconnect control (a user gesture — required to request permission —
+  // rather than silently staying on localStorage forever with no way back.
+  // No-ops entirely (leaving `pins` exactly as the load effect above set
+  // them) when the API isn't supported or nothing was ever linked, which is
+  // every existing test's environment.
+  useEffect(() => {
+    if (!isFileSystemAccessSupported()) return;
+    let cancelled = false;
+
+    (async () => {
+      const handle = await recallFileHandle().catch(() => null);
+      if (!handle || cancelled) return;
+
+      const permission = await queryReadWritePermission(handle).catch(() => 'denied' as const);
+      if (cancelled) return;
+
+      if (permission === 'granted') {
+        await adoptLinkedFile(handle);
+      } else {
+        setReconnectHandle(handle);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [adoptLinkedFile]);
+
+  async function handleReconnect() {
+    if (!reconnectHandle) return;
+    const handle = reconnectHandle;
+    setFileLinkError(null);
+    const permission = await requestReadWritePermission(handle).catch(() => 'denied' as const);
+    if (permission !== 'granted') {
+      setFileLinkError('Permission to reconnect that file was not granted.');
+      return;
+    }
+    await adoptLinkedFile(handle);
+  }
+
+  /**
+   * Forget the linked file and fall back to localStorage — the escape hatch
+   * a broken link otherwise has none of (see
+   * docs/reviews/Unit 6 - git syncable storage.md F2/F8: a linked file that
+   * can't be read used to dead-end the app with no in-app way back). The
+   * file on disk is left exactly as it was; only the in-app link and the
+   * remembered IndexedDB handle are forgotten. localStorage was never
+   * written to while a file was linked (Assumption 3), so re-reading it here
+   * surfaces whatever was there before the link, same discipline every other
+   * read here uses.
+   */
+  async function handleUnlink() {
+    await forgetFileHandle().catch(() => {});
+    setLinkedHandle(null);
+    setReconnectHandle(null);
+    setFileLinkError(null);
+    let seed: Pin[];
+    try {
+      seed = storedPinsForWrite();
+    } catch (e) {
+      setSaveError(
+        `Couldn’t switch back to browser storage: ${e instanceof Error ? e.message : String(e)}.`,
+      );
+      seed = [];
+    }
+    setPins(seed);
+    setInitialView(initialViewForPins(seed));
+    setMapEpoch((epoch) => epoch + 1);
+    setSelectedPinId(null);
+    setArmed(false);
+    setImportInfo(null);
+  }
+
+  /**
+   * Link storage to a file for the first time — reachable only while nothing
+   * is linked yet (the sidebar offers no relink/switch control once linked;
+   * see the decision log for why that's out of scope for this unit).
+   *
+   * Reuses Unit 3B's import machinery rather than inventing a new one: an
+   * existing file's content goes through the exact same `parseImportPayload`
+   * boundary and confirm-before-replace step a JSON import does. An empty
+   * file is the one case that ISN'T an import — there's nothing to validate
+   * or confirm, so it's seeded from what's currently shown instead.
+   */
+  async function linkFile(pick: () => Promise<FileSystemFileHandle>) {
+    setFileLinkError(null);
+    let handle: FileSystemFileHandle;
+    try {
+      handle = await pick();
+    } catch (e) {
+      // Cancelling the native picker rejects with AbortError — not a failure.
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      setFileLinkError(
+        `Couldn’t open the file picker: ${e instanceof Error ? e.message : String(e)}.`,
+      );
+      return;
+    }
+
+    const permission = await requestReadWritePermission(handle).catch(() => 'denied' as const);
+    if (permission !== 'granted') {
+      setFileLinkError('Permission to read and write that file was not granted.');
+      return;
+    }
+
+    let raw: string;
+    try {
+      raw = await readFile(handle);
+    } catch (e) {
+      setFileLinkError(`Couldn’t read that file: ${e instanceof Error ? e.message : String(e)}.`);
+      return;
+    }
+
+    if (raw === '') {
+      // New/empty file: nothing to validate or confirm — seed it from the
+      // freshest read of what's currently backing the app (storedPinsForWrite
+      // re-reads localStorage and handles a corrupt local store the same way
+      // every other write here does, rather than seeding from possibly-stale
+      // `pins` state). storedPinsForWrite can itself throw (a corrupt local
+      // store whose rescue backup also failed) — that used to escape this
+      // async function uncaught, leaving the link silently doing nothing with
+      // an orphaned empty file left on disk (see
+      // docs/reviews/Unit 6 - git syncable storage.md F6).
+      let seed: Pin[];
+      try {
+        seed = storedPinsForWrite();
+      } catch (e) {
+        setFileLinkError(
+          `Couldn’t seed that file: ${e instanceof Error ? e.message : String(e)}.`,
+        );
+        return;
+      }
+      try {
+        await writeFile(handle, serializePinsForFile(seed));
+      } catch (e) {
+        setFileLinkError(
+          `Couldn’t write the starting data to that file: ${
+            e instanceof Error ? e.message : String(e)
+          }.`,
+        );
+        return;
+      }
+      await rememberFileHandle(handle).catch(() => {});
+      setLinkedHandle(handle);
+      setReconnectHandle(null);
+      setPins(seed);
+      setImportInfo(
+        `Linked “${handle.name}”, seeded with your ${seed.length} existing ${leadNoun(seed.length)}.`,
+      );
+      return;
+    }
+
+    // Existing content: validate through the same boundary a JSON import
+    // uses, then hold it for an explicit confirmation naming both counts —
+    // never a silent replace of what's currently shown.
+    let imported: Pin[];
+    try {
+      imported = parseImportPayload(raw);
+    } catch (e) {
+      const cause = e instanceof Error ? e.cause : undefined;
+      const detail = cause instanceof Error ? `: ${cause.message}` : '';
+      setFileLinkError(
+        `That file isn’t a valid backup: ${e instanceof Error ? e.message : String(e)}${detail}.`,
+      );
+      return;
+    }
+
+    setPendingFileLink({
+      handle,
+      pins: imported,
+      raw,
+      fileName: handle.name,
+      savedCount: countStoredPinsSync(),
+    });
+  }
+
+  function handleChooseExisting() {
+    void linkFile(pickExistingFile);
+  }
+
+  function handleCreateNew() {
+    void linkFile(createNewFile);
+  }
+
+  async function handleConfirmFileLink() {
+    if (!pendingFileLink) return;
+    const { handle, pins: imported, raw } = pendingFileLink;
+    // Recomputed fresh here rather than reusing pendingFileLink.savedCount
+    // (captured back when the file was picked): a pin added between the
+    // picker resolving and this confirm click would otherwise make the
+    // post-link banner name a stale count for what was actually just
+    // replaced (see docs/reviews/Unit 6 - git syncable storage.md F12,
+    // mirroring how handleImportReplace's localStorage branch already
+    // re-reads fresh rather than trusting ImportExport's own pending count).
+    const previousCount = countStoredPinsSync();
+
+    let backupKey: string | null;
+    try {
+      // Snapshots whatever's currently in localStorage (the pre-link store —
+      // linking is only reachable before anything's linked) before the new
+      // file becomes the backend, exactly as a confirmed JSON import does.
+      backupKey = backupBeforeImport(storage);
+      // Skip the write entirely when the file already holds exactly this
+      // content in canonical form — otherwise linking an already-clean file
+      // (e.g. re-linking after Unlink) dirties the git working tree with a
+      // pure reformat and no actual data change (F10).
+      const canonical = serializePinsForFile(imported);
+      if (raw !== canonical) {
+        await writeFile(handle, canonical);
+      }
+    } catch (e) {
+      setFileLinkError(`Couldn’t link that file: ${e instanceof Error ? e.message : String(e)}.`);
+      setPendingFileLink(null);
+      return;
+    }
+    await rememberFileHandle(handle).catch(() => {});
+
+    setLinkedHandle(handle);
+    setReconnectHandle(null);
+    setPins(imported);
+    setInitialView(initialViewForPins(imported));
+    setMapEpoch((epoch) => epoch + 1);
+    setSelectedPinId(null);
+    setArmed(false);
+    setName('');
+    setSaveError(null);
+    setLoadError(null);
+    setDeleteInfo(null);
+    setPendingFileLink(null);
+    setImportInfo(
+      `Linked “${handle.name}”, replacing ${
+        previousCount === null
+          ? 'the previously shown data (which was unreadable)'
+          : `${previousCount} previously shown`
+      } with the ${imported.length} ${leadNoun(imported.length)} in that file. ${
+        backupKey
+          ? `Your previous data was backed up to “${backupKey}”.`
+          : 'There was nothing shown before this link.'
+      }`,
+    );
+  }
+
+  function handleCancelFileLink() {
+    setPendingFileLink(null);
+  }
+
+  /**
    * The stored list, re-read immediately before every write.
    *
    * Writing `[...pins]` from React state would rewrite the whole key from a
@@ -236,19 +612,51 @@ export default function App() {
       if (corruptBackupRef.current === null) {
         corruptBackupRef.current = backupCorruptStore(storage); // throws if it fails
       }
+      setLoadError(
+        loadFailure instanceof Error ? loadFailure.message : String(loadFailure),
+      );
+      setLoadErrorBackend('localStorage');
       setLoadError(describeError(loadFailure));
       return [];
     }
   }
 
   /**
-   * How many pins are actually in storage right now, or null if it's
-   * unreadable. Used only to word the import confirmation/banner honestly —
-   * `pins.length` (React state) is what another tab wrote as of THIS tab's
-   * last load or save, not what's about to be destroyed by a replace. See
-   * docs/reviews/Unit 3 Section B - export-import JSON.md F2.
+   * The linked file's current pins, re-read immediately before every write —
+   * the file-backed equivalent of `storedPinsForWrite`, same read-modify-
+   * write discipline, same "return [] and let the write become the recovery"
+   * contract on corrupt content. A read failure that isn't corrupt content
+   * (permission revoked mid-session, the file moved or was deleted) has
+   * nothing to snapshot and no safe automatic fallback, so it throws instead
+   * — the caller's existing try/catch turns that into a named saveError, the
+   * write is refused, and nothing is lost (see the decision log for why this
+   * doesn't auto-fall-back to localStorage the way startup reconnect does).
    */
-  function countStoredPins(): number | null {
+  async function readLinkedPinsForWrite(handle: FileSystemFileHandle): Promise<Pin[]> {
+    let raw: string;
+    try {
+      raw = await readFile(handle);
+    } catch (cause) {
+      throw new PinStoreError('could not read the linked file', { cause });
+    }
+    try {
+      return parsePinsPayload(raw);
+    } catch (parseFailure) {
+      if (fileCorruptBackupRef.current === null) {
+        fileCorruptBackupRef.current = backupRawAsCorrupt(storage, raw);
+      }
+      setLoadError(
+        parseFailure instanceof Error ? parseFailure.message : String(parseFailure),
+      );
+      setLoadErrorBackend('file-corrupt');
+      return [];
+    }
+  }
+
+  /** Synchronous localStorage count — the piece `countStoredPins` below
+   * shares with `linkFile`'s pending-link confirmation, which needs a plain
+   * number (not a Promise) since it's read before anything is linked. */
+  function countStoredPinsSync(): number | null {
     try {
       return loadPins(storage).length;
     } catch {
@@ -263,6 +671,47 @@ export default function App() {
     // even if the overlay is ever removed, resized, or z-index-regressed
     // (see docs/reviews/unit 7.md F2).
     if (activeView !== 'map') return;
+  /**
+   * How many pins are actually in the active backend right now, or null if
+   * it's unreadable. Used only to word an import/link confirmation or banner
+   * honestly — `pins.length` (React state) is what was last loaded or saved,
+   * not necessarily what's about to be destroyed by a replace (see
+   * docs/reviews/Unit 3 Section B - export-import JSON.md F2).
+   *
+   * Returns a plain value for localStorage (synchronous) or a Promise for a
+   * linked file (reading it is inherently async) — `ImportExport`'s
+   * `getSavedCount` prop accepts either, and `await`ing either works.
+   */
+  function countStoredPins(): number | null | Promise<number | null> {
+    if (linkedHandle) {
+      return readFile(linkedHandle)
+        .then((raw) => parsePinsPayload(raw).length)
+        .catch(() => null);
+    }
+    return countStoredPinsSync();
+  }
+
+  /**
+   * The pins to export, read fresh from the active backend rather than
+   * `pins` (React state) — the file-linked equivalent of `storedPinsForWrite`
+   * /`readLinkedPinsForWrite`, but for a read-only export rather than a
+   * write. Before Unit 6, exporting React state was fine because App was the
+   * only writer of localStorage; a linked file expects an external writer
+   * (`git pull`), so exporting stale state could silently produce a
+   * "backup" that omits pins pulled since the tab opened (see
+   * docs/reviews/Unit 6 - git syncable storage.md F3). Rejects (rather than
+   * falling back to something partial) if the linked file can't be read, so
+   * `ImportExport` can show a named error instead of downloading a lossy
+   * file.
+   */
+  function pinsForExport(): Pin[] | Promise<Pin[]> {
+    if (linkedHandle) {
+      return readFile(linkedHandle).then(parsePinsPayload);
+    }
+    return storedPinsForWrite();
+  }
+
+  async function handleMapClick(lat: number, lng: number) {
     if (!armed) return;
 
     // Build the pin, then persist it, and only commit to UI state if the save
@@ -276,8 +725,13 @@ export default function App() {
       // createPin re-validates and throws on an empty name; the form guards
       // against arming without one, so that branch is defense in depth.
       created = createPin({ name, lat, lng, strength });
-      next = [...storedPinsForWrite(), created];
-      savePins(storage, next); // persist explicitly, never via a mount effect
+      if (linkedHandle) {
+        next = [...(await readLinkedPinsForWrite(linkedHandle)), created];
+        await writeFile(linkedHandle, serializePinsForFile(next));
+      } else {
+        next = [...storedPinsForWrite(), created];
+        savePins(storage, next); // persist explicitly, never via a mount effect
+      }
     } catch (e) {
       setSaveError(
         `Couldn’t save that pin: ${e instanceof Error ? e.message : String(e)}. It was not added.`,
@@ -317,7 +771,7 @@ export default function App() {
     setSelectedPinId(id);
   }
 
-  function handleSaveEdits(edits: {
+  async function handleSaveEdits(edits: {
     name: string;
     strength: LeadStrength;
     notes: string;
@@ -333,8 +787,13 @@ export default function App() {
     let updated: Pin;
     try {
       updated = updatePin(selectedPin, edits);
-      next = replacePin(storedPinsForWrite(), updated);
-      savePins(storage, next);
+      if (linkedHandle) {
+        next = replacePin(await readLinkedPinsForWrite(linkedHandle), updated);
+        await writeFile(linkedHandle, serializePinsForFile(next));
+      } else {
+        next = replacePin(storedPinsForWrite(), updated);
+        savePins(storage, next);
+      }
     } catch (e) {
       setSaveError(
         `Couldn’t save those changes: ${e instanceof Error ? e.message : String(e)}. The pin is unchanged.`,
@@ -366,10 +825,10 @@ export default function App() {
    * whenever this tab last loaded or saved, silently discarding notes another
    * tab wrote after that (see docs/reviews/Delete a pin.md F1).
    */
-  function handleDeletePin(id: string) {
+  async function handleDeletePin(id: string) {
     let current: Pin[];
     try {
-      current = storedPinsForWrite();
+      current = linkedHandle ? await readLinkedPinsForWrite(linkedHandle) : storedPinsForWrite();
     } catch (e) {
       setSaveError(
         `Couldn’t delete that pin: ${e instanceof Error ? e.message : String(e)}. It was not removed.`,
@@ -392,7 +851,11 @@ export default function App() {
     let next: Pin[];
     try {
       next = removePin(current, id);
-      savePins(storage, next);
+      if (linkedHandle) {
+        await writeFile(linkedHandle, serializePinsForFile(next));
+      } else {
+        savePins(storage, next);
+      }
     } catch (e) {
       setSaveError(
         `Couldn’t delete that pin: ${e instanceof Error ? e.message : String(e)}. It was not removed.`,
@@ -419,18 +882,19 @@ export default function App() {
    * case the safest thing is to decline the undo rather than poison the store
    * — there's nothing more recoverable to fall back to.
    */
-  function handleUndoDelete() {
+  async function handleUndoDelete() {
     if (!deleteInfo) return;
     const { pin } = deleteInfo;
 
     let current: Pin[];
     try {
-      current = storedPinsForWrite();
+      current = linkedHandle ? await readLinkedPinsForWrite(linkedHandle) : storedPinsForWrite();
     } catch (e) {
-      // storedPinsForWrite() can throw (an unreadable store whose corrupt
-      // snapshot also failed) — that used to escape this handler uncaught,
-      // leaving the Undo button on screen doing nothing forever with no
-      // banner telling the user why (see docs/reviews/Delete a pin.md F4).
+      // storedPinsForWrite()/readLinkedPinsForWrite() can throw (an unreadable
+      // store whose corrupt snapshot also failed) — that used to escape this
+      // handler uncaught, leaving the Undo button on screen doing nothing
+      // forever with no banner telling the user why (see
+      // docs/reviews/Delete a pin.md F4).
       setSaveError(
         `Couldn’t restore “${pin.name}”: ${e instanceof Error ? e.message : String(e)}.`,
       );
@@ -447,7 +911,11 @@ export default function App() {
 
     const next = [...current, pin];
     try {
-      savePins(storage, next);
+      if (linkedHandle) {
+        await writeFile(linkedHandle, serializePinsForFile(next));
+      } else {
+        savePins(storage, next);
+      }
     } catch (e) {
       setSaveError(
         `Couldn’t restore “${pin.name}”: ${e instanceof Error ? e.message : String(e)}.`,
@@ -465,21 +933,59 @@ export default function App() {
    * Replace the whole store with an imported file's pins. `ImportExport` has
    * already validated the file (every record through parsePin) and gotten an
    * explicit confirmation naming both counts — this is the one function that
-   * actually commits it, so App stays the only thing that touches `storage`.
+   * actually commits it, so App stays the only thing that touches storage
+   * (localStorage or, once linked, the file).
    *
-   * Unlike the add/edit paths this does NOT read `storedPinsForWrite()` first:
-   * a replace means replace, and re-merging in whatever another tab wrote
+   * Unlike the add/edit paths this does NOT read the current pins first: a
+   * replace means replace, and re-merging in whatever another tab wrote
    * since would silently turn this from "replace" into "replace-most-of",
    * defeating the confirmation the user just saw the counts for.
    */
-  function handleImportReplace(imported: Pin[]) {
-    // Read BEFORE importPins's own snapshot-then-write, and from storage, not
-    // `pins`: the banner has to name what was actually just destroyed, not
-    // what this tab's in-memory state happened to say a moment ago.
-    const previousCount = countStoredPins();
+  async function handleImportReplace(imported: Pin[]) {
+    let previousCount: number | null;
     let backupKey: string | null;
     try {
-      ({ backupKey } = importPins(storage, imported));
+      if (linkedHandle) {
+        // A failed read means there is nothing safe to snapshot — this must
+        // hard-abort the replace exactly the way a failed backupBeforeImport
+        // aborts the localStorage path below, rather than silently skipping
+        // the snapshot and writing anyway while telling the user nothing was
+        // there (see docs/reviews/Unit 6 - git syncable storage.md F1: this
+        // used to destroy the file's contents with no backup and no undo).
+        let raw: string;
+        try {
+          raw = await readFile(linkedHandle);
+        } catch (cause) {
+          throw new PinStoreError('could not read the linked file before replacing it', {
+            cause,
+          });
+        }
+        if (raw === '') {
+          // Genuinely empty file, not a read failure — nothing to back up,
+          // and 0 (not null/"unreadable") is the honest previous count.
+          previousCount = 0;
+          backupKey = null;
+        } else {
+          // Readable bytes — back them up regardless of whether they parse:
+          // corrupt content discovered on an already-linked file is treated
+          // the same as any other unreadable linked-file read (Assumption 5),
+          // and here we HAVE the bytes to rescue.
+          backupKey = backupRawBeforeReplace(storage, raw);
+          try {
+            previousCount = parsePinsPayload(raw).length;
+          } catch {
+            previousCount = null;
+          }
+        }
+        await writeFile(linkedHandle, serializePinsForFile(imported));
+      } else {
+        // Read BEFORE importPins's own snapshot-then-write, and from storage,
+        // not `pins`: the banner has to name what was actually just
+        // destroyed, not what this tab's in-memory state happened to say a
+        // moment ago.
+        previousCount = countStoredPinsSync();
+        ({ backupKey } = importPins(storage, imported));
+      }
     } catch (e) {
       setSaveError(
         `Couldn’t import: ${e instanceof Error ? e.message : String(e)}. Nothing was changed.`,
@@ -529,6 +1035,31 @@ export default function App() {
     );
   }
 
+  /**
+   * The load-error banner's copy, keyed off `loadErrorBackend` rather than
+   * guessing from which of the two backup refs happens to be non-null.
+   * Before this, `corruptBackupRef.current ?? fileCorruptBackupRef.current`
+   * could name the WRONG rescue key when both localStorage and a linked file
+   * had failed in the same session — the key shown came from whichever ref
+   * was set first, but the message text described whichever error happened
+   * MOST RECENTLY (see docs/reviews/Unit 6 - git syncable storage.md F9).
+   * Also fixes F11: a hard, unrecoverable read failure on a linked file
+   * (F2's `'file-unreadable'`) is not a corrupt-content case — nothing was
+   * backed up, nothing needs to be, and localStorage (never touched while
+   * linked) is still exactly what's shown and being written to, so the old
+   * "new pins you add will overwrite it" copy was actively false there.
+   */
+  function describeLoadError(): string {
+    if (loadErrorBackend === 'file-unreadable') {
+      return `Couldn’t read the linked file: ${loadError}. Your browser-saved data is untouched and stays active — use Reconnect below to try the file again.`;
+    }
+    const backupKey =
+      loadErrorBackend === 'file-corrupt' ? fileCorruptBackupRef.current : corruptBackupRef.current;
+    return backupKey === null
+      ? `Couldn’t read saved pins: ${loadError}. Your saved data is untouched; new pins you add will overwrite it.`
+      : `Couldn’t read saved pins: ${loadError}. The unreadable data was copied to “${backupKey}” before anything else is saved, so nothing is lost — recover it from there.`;
+  }
+
   return (
     <div className="app">
       <aside className="sidebar">
@@ -546,10 +1077,7 @@ export default function App() {
 
         {loadError && (
           <div className="banner banner--error" role="alert">
-            Couldn’t read saved pins: {loadError}.{' '}
-            {corruptBackupRef.current === null
-              ? 'Your saved data is untouched; new pins you add will overwrite it.'
-              : `The unreadable data was copied to “${corruptBackupRef.current}” before anything else is saved, so nothing is lost — recover it from there.`}
+            {describeLoadError()}
           </div>
         )}
 
@@ -606,9 +1134,29 @@ export default function App() {
 
         <Legend />
 
+        <DataFileLink
+          supported={isFileSystemAccessSupported()}
+          linkedFileName={linkedHandle?.name ?? null}
+          reconnectFileName={reconnectHandle?.name ?? null}
+          pendingLink={
+            pendingFileLink && {
+              fileName: pendingFileLink.fileName,
+              savedCount: pendingFileLink.savedCount,
+              importCount: pendingFileLink.pins.length,
+            }
+          }
+          error={fileLinkError}
+          onChooseExisting={handleChooseExisting}
+          onCreateNew={handleCreateNew}
+          onReconnect={handleReconnect}
+          onConfirmLink={handleConfirmFileLink}
+          onCancelLink={handleCancelFileLink}
+          onUnlink={handleUnlink}
+        />
+
         <ImportExport
-          pins={pins}
           getSavedCount={countStoredPins}
+          getPinsForExport={pinsForExport}
           onImport={handleImportReplace}
         />
 
@@ -684,6 +1232,23 @@ export default function App() {
               onSelectPin={handleSelectPin}
             />
           </div>
+        {/* Held back for the one render it takes to read the store: a map
+            created before the pins are known could only fit itself to them
+            afterwards, which is the re-fit this unit exists to avoid.
+            key={mapEpoch}: unchanged on every ordinary render, so this stays
+            the same mount-time fit — it only advances on a confirmed import
+            (or Unit 6 link/reconnect), which forces the remount that applies
+            the recomputed view. */}
+        {initialView && (
+          <MapView
+            key={mapEpoch}
+            initialView={initialView}
+            pins={visiblePins}
+            selectedPinId={selectedPinId}
+            onMapClick={handleMapClick}
+            onSelectPin={handleSelectPin}
+            onViewChange={handleViewChange}
+          />
         )}
       </main>
     </div>

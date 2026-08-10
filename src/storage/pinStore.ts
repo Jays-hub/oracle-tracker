@@ -24,18 +24,18 @@ export class PinStoreError extends Error {
 }
 
 /**
- * Load pins from storage.
- * - Absent key   -> [] (first run; empty-but-usable).
- * - Present data -> fully validated. ANY corruption throws PinStoreError and
- *   leaves the stored bytes untouched. We never return a partial/filtered list,
- *   so a bad store can neither crash silently nor drop pins on the floor.
- *
- * The key stays at `.v1` even though unit 2 added `notes`: the change is
- * backward-compatible (a record with no notes loads with notes ''), so bumping
- * the key would strand pins the user already saved instead of migrating them.
+ * Validate raw bytes into pins — the boundary `loadPins` uses for
+ * `localStorage`, and (Unit 6) the one a linked file's contents go through
+ * too, so a git-conflict-mangled or truncated file fails exactly the same way
+ * a corrupt `localStorage` entry does, with no separate code path to keep in
+ * sync.
+ * - `null` -> [] (nothing stored yet; only a real state for `localStorage`'s
+ *   absent-key case — a linked file is never passed `null`, only `''` or up).
+ * - Present data -> fully validated. ANY corruption throws PinStoreError. We
+ *   never return a partial/filtered list, so a bad store can neither crash
+ *   silently nor drop pins on the floor.
  */
-export function loadPins(storage: StorageLike): Pin[] {
-  const raw = storage.getItem(STORAGE_KEY);
+export function parsePinsPayload(raw: string | null): Pin[] {
   if (raw === null) {
     return [];
   }
@@ -69,6 +69,17 @@ export function loadPins(storage: StorageLike): Pin[] {
   return pins;
 }
 
+/**
+ * Load pins from `localStorage` (or any injected `StorageLike`).
+ *
+ * The key stays at `.v1` even though unit 2 added `notes`: the change is
+ * backward-compatible (a record with no notes loads with notes ''), so bumping
+ * the key would strand pins the user already saved instead of migrating them.
+ */
+export function loadPins(storage: StorageLike): Pin[] {
+  return parsePinsPayload(storage.getItem(STORAGE_KEY));
+}
+
 /** Key prefix for snapshots of unreadable data. */
 export const CORRUPT_BACKUP_PREFIX = `${STORAGE_KEY}.corrupt-`;
 
@@ -85,11 +96,14 @@ export const IMPORT_BACKUP_PREFIX = `${STORAGE_KEY}.backup-`;
 export const MAX_IMPORT_BACKUPS = 5;
 
 /**
- * Copy whatever is currently stored aside under `${prefix}<ISO timestamp>`.
- * Shared by `backupCorruptStore` and `backupBeforeImport` — both just need
- * "whatever is there right now, copied somewhere safe before I write over
- * it," and differ only in which prefix names the result and why. Returns the
- * new key, or null when there was nothing stored to copy.
+ * Copy `raw` aside under `${prefix}<ISO timestamp>`. Shared by every backup
+ * path — `backupCorruptStore`/`backupBeforeImport` (which read `raw` from
+ * `storage` itself) and Unit 6's file-sourced callers (`backupRawAsCorrupt`/
+ * `backupRawBeforeReplace`, which read it from a linked file instead) — all
+ * just need "these bytes, copied somewhere safe before I write over them,"
+ * and differ only in where the bytes came from and which prefix names the
+ * result. `localStorage` is always the destination: it's the one medium this
+ * app can always write a rescue copy to, file-backed or not.
  *
  * Throws PinStoreError if the copy itself fails — the caller must then refuse
  * to overwrite. Losing notes because the *rescue* quietly failed would be
@@ -101,12 +115,9 @@ export const MAX_IMPORT_BACKUPS = 5;
 function writeSnapshot(
   storage: StorageLike,
   prefix: string,
+  raw: string,
   now: () => number,
-): string | null {
-  const raw = storage.getItem(STORAGE_KEY);
-  if (raw === null) {
-    return null;
-  }
+): string {
   const key = `${prefix}${new Date(now()).toISOString()}`;
   try {
     storage.setItem(key, raw);
@@ -147,7 +158,27 @@ export function backupCorruptStore(
   storage: StorageLike,
   now: () => number = Date.now,
 ): string | null {
-  return writeSnapshot(storage, CORRUPT_BACKUP_PREFIX, now);
+  const raw = storage.getItem(STORAGE_KEY);
+  if (raw === null) {
+    return null;
+  }
+  return writeSnapshot(storage, CORRUPT_BACKUP_PREFIX, raw, now);
+}
+
+/**
+ * Same as `backupCorruptStore`, but for raw bytes that didn't come from
+ * `storage` itself — a linked file's unreadable contents (Unit 6), which are
+ * still rescued into `localStorage` since that's the one medium always
+ * available to write a copy to. Unlike `backupCorruptStore`, `raw` is always
+ * known to exist here (the caller already read it from the file to discover
+ * it was corrupt), so there's no "nothing to copy" case to return null for.
+ */
+export function backupRawAsCorrupt(
+  storage: StorageLike,
+  raw: string,
+  now: () => number = Date.now,
+): string {
+  return writeSnapshot(storage, CORRUPT_BACKUP_PREFIX, raw, now);
 }
 
 /**
@@ -162,7 +193,30 @@ export function backupBeforeImport(
   storage: StorageLike,
   now: () => number = Date.now,
 ): string | null {
-  const key = writeSnapshot(storage, IMPORT_BACKUP_PREFIX, now);
+  const raw = storage.getItem(STORAGE_KEY);
+  if (raw === null) {
+    return null;
+  }
+  const key = writeSnapshot(storage, IMPORT_BACKUP_PREFIX, raw, now);
+  pruneSnapshots(storage, IMPORT_BACKUP_PREFIX, MAX_IMPORT_BACKUPS);
+  return key;
+}
+
+/**
+ * Same as `backupBeforeImport`, but for a linked file's current raw contents
+ * (Unit 6) rather than `storage`'s own key — used before a confirmed link (an
+ * existing file's content replaces what's shown) and before writes that
+ * replace the file wholesale. Snapshots into `localStorage` under the same
+ * `IMPORT_BACKUP_PREFIX` and the same 5-snapshot prune, since both are the
+ * same class of event: a confirmed wholesale replace of the live store,
+ * whichever medium the live store happens to be.
+ */
+export function backupRawBeforeReplace(
+  storage: StorageLike,
+  raw: string,
+  now: () => number = Date.now,
+): string {
+  const key = writeSnapshot(storage, IMPORT_BACKUP_PREFIX, raw, now);
   pruneSnapshots(storage, IMPORT_BACKUP_PREFIX, MAX_IMPORT_BACKUPS);
   return key;
 }
@@ -183,5 +237,31 @@ export function serializePins(pins: Pin[]): string {
       strength: p.strength,
       notes: p.notes,
     })),
+  );
+}
+
+/**
+ * Same fields, same fixed order as `serializePins`, but pretty-printed with a
+ * trailing newline — used for every write to a Unit 6 linked file, never for
+ * `localStorage` (which is never diffed or merged). A git-tracked file
+ * written as one minified line guarantees a merge conflict on any two
+ * concurrent edits, since git merges line-by-line; one lead per line lets two
+ * devices that touched different pins auto-merge instead of colliding on the
+ * whole file (see docs/reviews/Unit 6 - git syncable storage.md F4).
+ */
+export function serializePinsForFile(pins: Pin[]): string {
+  return (
+    JSON.stringify(
+      pins.map((p) => ({
+        id: p.id,
+        name: p.name,
+        lat: p.lat,
+        lng: p.lng,
+        strength: p.strength,
+        notes: p.notes,
+      })),
+      null,
+      2,
+    ) + '\n'
   );
 }
