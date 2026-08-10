@@ -9,6 +9,153 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-10 — [reviewed] [fixed] Unit 6: git-syncable storage — review closed
+
+[reviewed] Cold-context adversarial review: `docs/reviews/Unit 6 - git syncable storage.md`. **Verdict:
+no** against the unit's own Done-when — export didn't go through the linked file (F3) and import did so
+destructively (F1), an unreadable linked file got adopted anyway at startup instead of degrading to
+empty-but-usable (F2), and "the link persists across reloads" was proven only by two mocks meeting in the
+middle, never against a real `FileSystemFileHandle`/IndexedDB round-trip (F5). 1 BLOCKER + 4 MAJOR + 5
+MINOR + 3 NIT — all thirteen addressed below.
+
+[fixed] **BLOCKER (F1) — import-replace against a linked file whose read failed destroyed the file with
+no snapshot, while the banner claimed nothing was there.** `handleImportReplace`'s linked branch now
+hard-aborts (throws, refuses the write, no false "nothing was saved" claim) on a failed read, exactly
+mirroring how a failed `backupBeforeImport` already aborts the localStorage path. A genuinely empty file
+(`raw === ''`) is still the one case that legitimately skips the snapshot. Two new App tests cover both
+the abort and the successful-backup twin.
+
+[fixed] **MAJOR (F2) — a linked file unreadable at startup got adopted anyway**, hiding every localStorage
+pin behind an empty, write-refusing, un-escapable "linked" state. `adoptLinkedFile` now only adopts on a
+successful read; a hard read failure leaves localStorage active and re-surfaces Reconnect. Corrupt
+*content* (readable bytes that fail validation, e.g. a git-conflict-mangled file) is still adopted and
+backed up — that half of Assumption 4/5 was correct and stays.
+
+[fixed] **MAJOR (F3) — "Export as JSON" while linked exported React state, not the linked file**, so a
+`git pull` since the tab opened was silently omitted from the "backup." `ImportExport` now takes a
+`getPinsForExport` function (mirroring `getSavedCount`'s async-capable shape) instead of a static `pins`
+prop; App's implementation re-reads the linked file (or localStorage) fresh and surfaces a named error if
+the read fails, rather than downloading something partial.
+
+[fixed] **MAJOR (F4) — the linked file was written as single-line minified JSON**, guaranteeing a git
+merge conflict on any two concurrent edits despite the unit's whole purpose being git-mergeable sync. New
+`serializePinsForFile` (pretty-printed, trailing newline) is used for every write to a linked file;
+`serializePins` (unchanged, minified) stays for `localStorage`, which is never diffed.
+
+[fixed] **MAJOR (F5) — "the link persists across reloads" had no real-browser verification.** Ran a live
+Chrome session against the dev server this time (`/session-start`'s earlier note "extension wasn't
+connected" no longer applies). Confirmed: the native file picker genuinely opens on Choose/Create, and
+cancelling it (Escape) is handled cleanly with no error banner and no crash, matching the existing
+cancelled-picker test. Could **not** complete the full create → link → reload → reconnect walkthrough:
+Claude-in-Chrome's screenshot/computer tools capture the browser tab's rendered content only, not the
+OS-native save/open dialog, so there's no way to type a filename or click Save in it via this tool.
+Flagging honestly rather than fabricating a pass — a human doing the same walkthrough by hand (a ~2 minute
+manual check) is the one thing left this session couldn't automate.
+
+[fixed] **MINOR (F6) — `linkFile`'s empty-file seed read could throw uncaught.** `storedPinsForWrite()`
+(called when seeding a brand-new file) is now wrapped in its own try/catch, surfacing a named
+`fileLinkError` instead of an unhandled rejection that left the link silently doing nothing.
+
+[fixed] **MINOR (F7) — edit, delete, undo, import, and export against a linked file had zero test
+coverage**; only *add* was covered, and F1/F3 lived exactly in the two untested operations. Added App-level
+tests for all five against a linked file, each asserting `localStorage` stays untouched throughout.
+
+[fixed] **MINOR (F8) — `forgetFileHandle` was written and tested but never wired to anything**, while the
+actual gap it exists to close (no way out of a broken link) stayed open. Added an **Unlink** control to
+`DataFileLink`'s linked state, wired to a new `handleUnlink` in `App` that forgets the handle and falls
+back to a fresh re-read of localStorage.
+
+[fixed] **MINOR (F9) — with both localStorage and a linked file corrupt in the same session, the banner
+named the wrong rescue key** (the first ref set, paired with the most recent error's message). Replaced
+the `corruptBackupRef.current ?? fileCorruptBackupRef.current` guess with an explicit `loadErrorBackend`
+discriminator set alongside every `setLoadError` call, so the banner's key and message always describe the
+same failure.
+
+[fixed] **MINOR (F10) — linking an already-canonical file rewrote it anyway**, dirtying the git tree with
+a pure reformat and no data change. `handleConfirmFileLink` now skips the write when the file's raw bytes
+already equal `serializePinsForFile(imported)`.
+
+[fixed] **MINOR (F11) — the load-error banner's "new pins you add will overwrite it" was false for a
+hard, unrecoverable linked-file read failure** (F2's case): nothing was backed up, nothing needed to be,
+and writes go to localStorage, not "overwrite" anything. Banner copy now branches on `loadErrorBackend`.
+
+[fixed] **NIT (F12) — `pendingFileLink.savedCount` was captured at pick time and reused stale for the
+post-link banner.** `handleConfirmFileLink` now recomputes the previous count fresh via
+`countStoredPinsSync()`, mirroring how `handleImportReplace`'s localStorage branch already does.
+
+[fixed] **MINOR (F13) — Assumption 1 (the localStorage branch of every write handler must contain zero
+executed `await`s) was guarded only by a comment**, per `.claude/rules/00-process.md`'s "prose is not
+mechanism." Added an explicit, named test asserting a synchronous `stored()` read immediately after
+`fireEvent.click`, with no `await`/`waitFor` — self-proving: reverting the fix (planting a stray `await`)
+fails exactly this test.
+
+**Self-proving — 3 of the fixes plant/revert verified this session** (F1, F2, F13 — the three with the
+sharpest silent-failure mode): each mutation reverted to the pre-fix behavior, run against the new/updated
+test, confirmed to fail for the right reason, then restored; `git diff` confirmed no leftover markers.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean (0 warnings) · `npm test` **201 passed** (12
+files; was 186) · `npm run build` succeeds (89 modules).
+
+Unit 6 is now done — every Done-when bullet met and the reviewer's findings closed, modulo F5's honestly-
+flagged manual-walkthrough gap (real picker confirmed to open and cancel cleanly; full link/reload/
+reconnect not automatable with the current browser tooling).
+
+---
+
+## 2026-08-06 — [built] Unit 6: git-syncable storage
+
+[built] Closes the "one browser, one machine" gap: a sidebar **Sync via file** control lets you link
+storage to a real file on disk (e.g. `data/pins.json`) via the File System Access API — once linked,
+every add/edit/delete/import/export goes through that file instead of `localStorage`, and committing/
+pushing/pulling it through your normal git workflow is the sync mechanism. `localStorage` stays the
+default for anyone who hasn't linked a file, or whose browser lacks the API (feature-detected, with an
+honest fallback message, no crash). The link is remembered across reloads via IndexedDB; reconnecting
+needs at most one permission-confirmation click. Linking a new/empty file seeds it from what's currently
+shown; linking a file with existing content reuses Unit 3B's import machinery (`parseImportPayload`,
+confirm naming both counts, pre-link snapshot into `localStorage`) rather than a new mechanism. An
+unreadable *already-linked* file (including one left mid-git-conflict) is backed up aside and shown as a
+named error exactly like a corrupt `localStorage` read is today — see the decision log for why a corrupt
+file discovered at *first-link* time instead just rejects the link cleanly.
+
+Artifacts: `src/storage/fileStorage.ts` (File System Access wrapper, 12 tests), `src/storage/
+fileHandleRegistry.ts` (IndexedDB handle persistence, 6 tests), `src/components/DataFileLink.tsx` (+ 8
+tests), `src/types/file-system-access.d.ts` (ambient types this TS version's `lib.dom.d.ts` doesn't have
+yet), `src/test/fakeFileHandle.ts` (shared test double). `src/storage/pinStore.ts` refactored
+(`parsePinsPayload` extracted from `loadPins`, `backupRawAsCorrupt`/`backupRawBeforeReplace` added, +7
+tests, all pre-existing behaviour unchanged). `src/components/ImportExport.tsx` (`getSavedCount` widened
+to tolerate an async answer, +1 test). `src/App.tsx` — every write handler now branches on whether a
+file is linked; the localStorage branch is untouched byte-for-byte and contains zero `await`s, which is
+why all 143 pre-existing tests needed no modification (see decision log Assumption 1). +9 new App-level
+integration tests. `CLAUDE.md` updated (Structure section + standing order #2) per the unit's own
+Done-when. Decision log: `docs/build_notes/Unit 6 - git syncable storage.md`.
+
+[decided] Added `fake-indexeddb` as a devDependency so `fileHandleRegistry`'s real IndexedDB round-trip
+could be genuinely tested rather than left untested (jsdom doesn't implement IndexedDB at all). App-level
+tests mock the registry module at its boundary instead, since a `FileSystemFileHandle`-shaped fake (with
+function properties) can't survive fake-indexeddb's structured clone — a fidelity gap in the fake, not in
+the code; documented in both test files.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean (0 warnings) · `npm test` **186 passed** (12
+files; was 143) · `npm run build` succeeds (89 modules). **Self-proving — 4 regressions planted, run,
+restored, confirmed no leftover markers:** removing the empty-file seed branch fails the seed test;
+skipping the pre-link backup snapshot fails the backup-key assertions; making the mid-session read-failure
+path swallow the error instead of throwing fails the dedicated "refuses a write... rather than silently
+switching backends" test (the pin got silently added instead of refused); swapping the corrupt-backup
+prefix for the import-backup prefix is caught independently at both the `pinStore.test.ts` unit level and
+the App integration level.
+
+**In-browser verification was not performed** — the Claude-in-Chrome extension wasn't connected this
+session. Flagged explicitly in the decision log rather than fabricated; the automated coverage above
+(including 9 App-level tests driving a real `FileSystemFileHandle`-shaped fake through the actual
+component tree) is what stands in for it. Recommend a real-browser pass specifically for the two things a
+fake handle can't prove: the native file-picker dialogs, and a real permission-prompt on reconnect.
+
+Not marked done — awaiting the review. Two spots flagged as least-confident in the decision log: whether
+a corrupt file discovered at *first-link* time (before anything is adopted) should also be backed up
+somewhere despite there being no store to back it up from, and whether the two independent mount-time
+effects (localStorage load + Unit 6 reconnect check) racing is as harmless as judged.
+
+Next: `/review Unit 6 - git syncable storage`.
 ## 2026-08-06 — [reviewed] [fixed] The two NIT closures below got a cold-context review after all
 
 [reviewed] The entry below framed these two fixes as NIT-level and exempt from `/review`. On reflection

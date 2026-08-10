@@ -421,6 +421,79 @@ body,
   color: var(--ink);
 }
 
+/* Data file link (Unit 6) ------------------------------------------------- */
+.data-file-link {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.data-file-link__title {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.data-file-link__note,
+.data-file-link__status {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.data-file-link__linked {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.data-file-link__reconnect p {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.data-file-link__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.data-file-link button {
+  padding: 9px 12px;
+  border: none;
+  border-radius: 6px;
+  background: #2f6fed;
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+/* Same class+element specificity trap as `.import-export button.import-export__cancel`
+   (docs/reviews/Unit 3 Section B - export-import JSON.md): a plain
+   `.data-file-link__cancel` would silently lose to the blue default. */
+.data-file-link button.data-file-link__cancel,
+.data-file-link button.data-file-link__unlink {
+  background: #64748b;
+}
+
+.data-file-link__confirm p {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.data-file-link__error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #8a1c1c;
+}
+
 /* Legend ------------------------------------------------------------------- */
 .legend {
   list-style: none;

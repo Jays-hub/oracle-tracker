@@ -13,8 +13,11 @@ happened there.
 
 ## Structure
 Local-first browser app: a React + TypeScript SPA (Vite) rendering a Leaflet map over OpenStreetMap
-tiles, with all state persisted to the browser's `localStorage`. No backend, no external data API — the
-map tiles are the only network dependency.
+tiles. State persists to the browser's `localStorage` by default, or — once linked via a sidebar control
+— to a git-tracked JSON file on disk (`data/pins.json`) through the File System Access API (Chromium
+only); committing/pushing/pulling that file through your normal git workflow is the multi-device sync
+mechanism (Unit 6). No backend, no external data API — the map tiles are the only network dependency,
+and the app itself never talks to git; it only reads and writes bytes at a path you chose.
 
 ```
 .
@@ -24,7 +27,7 @@ map tiles are the only network dependency.
 ├── .claude/agents/        # the cold-context reviewer (add more write-scoped agents as needed)
 ├── .claude/hooks/         # enforcement — turns "read-only reviewer" into mechanism
 ├── docs/                  # roadmap.md (specs for planned units) · progress_log.md (running log) · build_notes/ · reviews/ · agentic_workflow/ (self-record)
-└── src/                   # the app: Leaflet map, pin model + lead-strength colors, localStorage store
+└── src/                   # the app: Leaflet map, pin model + lead-strength colors, localStorage/git-file store
 ```
 
 ## Standing orders
@@ -33,7 +36,10 @@ map tiles are the only network dependency.
 2. **Name the drift.** Call out any reach for sophistication before the simpler, higher-value step that
    meets the real acceptance bar exists. Over-engineering is a defect. For this project specifically: a
    backend, a database, a server, an accounts system, or any external places/geo API is drift — this is
-   a single-user, local-first, standalone tool.
+   a single-user, local-first, standalone tool. Reading/writing a git-tracked file on disk via the
+   browser's File System Access API (Unit 6) is **not** this drift: there is still no server the app
+   talks to, no accounts, and no network surface beyond the map tiles — `git push`/`pull`, run manually
+   by the user outside the app, is the sync mechanism, not the app itself.
 3. **DONE-WHEN.** "Done" (product bar) = from a clean checkout, `npm ci && npm run dev` serves an
    app where I can: pin a restaurant on the map by name and location, mark its lead strength as
    strong / weak / failed and see the pin rendered in the matching color (**strong = green, weak =
