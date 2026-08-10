@@ -49,8 +49,6 @@ import {
   recallFileHandle,
   rememberFileHandle,
 } from './storage/fileHandleRegistry';
-import { backupCorruptStore, loadPins, savePins } from './storage/pinStore';
-import { importPins } from './storage/importExport';
 import { describeError } from './errors';
 import { clearView, loadView, saveView, type PersistedView } from './storage/viewStore';
 
