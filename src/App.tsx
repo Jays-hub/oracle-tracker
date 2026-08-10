@@ -5,6 +5,8 @@ import { PinEditor } from './components/PinEditor';
 import { Legend } from './components/Legend';
 import { ImportExport } from './components/ImportExport';
 import { PinFilterBar } from './components/PinFilterBar';
+import { PinList } from './components/PinList';
+import { ViewSwitcher, type MainView } from './components/ViewSwitcher';
 import {
   createPin,
   leadNoun,
@@ -76,6 +78,31 @@ export default function App() {
   // view with every restored pin off screen until the next reload (see
   // docs/reviews/Unit 3 Section B - export-import JSON.md F1).
   const [mapEpoch, setMapEpoch] = useState(0);
+
+  // Which surface the main pane shows: the map (default) or the list. Pure
+  // UI/read state — switching never touches storage, the current selection,
+  // or the add-pin flow (Unit 7's "Done when"). MapView itself is never
+  // unmounted by this: it stays mounted and simply gets covered by the list
+  // panel, so a pan/zoom mid-session survives a round trip through List and
+  // back, and Leaflet's container never changes size (no resize/invalidation
+  // dance needed). See `.list-pane` in index.css.
+  const [activeView, setActiveView] = useState<MainView>('map');
+
+  // React 18 has no `inert` JSX prop (that lands in React 19), so the
+  // covered map's tabbability is toggled directly on the DOM node instead.
+  // `toggleAttribute`, not the `.inert` IDL property: the property setter is
+  // meant to reflect to the attribute, but doesn't in this project's jsdom
+  // (verified directly — `el.inert = true` left `getAttribute('inert')`
+  // `null`), so a test asserting the attribute would pass in every real
+  // browser and silently no-op here. `toggleAttribute` sets the actual
+  // attribute either way, which is what makes every descendant (Leaflet's
+  // zoom buttons, markers, attribution links) untabbable and unclickable in
+  // one step — `aria-hidden` alone does not (see the `activeView === 'list'`
+  // JSX comment below).
+  const mapWrapperRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    mapWrapperRef.current?.toggleAttribute('inert', activeView === 'list');
+  }, [activeView]);
 
   // Draft state for the add-a-pin flow.
   const [name, setName] = useState('');
@@ -176,8 +203,15 @@ export default function App() {
    * mapEpoch remount handleImportReplace already uses, and clears the saved
    * view so this fit — not the position that stranded the user — is what a
    * reload restores from here on, until the next real pan.
+   *
+   * Also switches to Map: this button is always visible (including from
+   * List), but its entire effect — re-fitting and force-remounting the map —
+   * is invisible from List, where it silently discards the saved view with
+   * nothing on screen changing. Switching to Map makes the recovery it
+   * performs actually observable (see docs/reviews/unit 7.md F1).
    */
   function handleShowAllLeads() {
+    setActiveView('map');
     setInitialView(initialViewForPins(pins));
     setMapEpoch((epoch) => epoch + 1);
     clearView(storage);
@@ -223,6 +257,12 @@ export default function App() {
   }
 
   function handleMapClick(lat: number, lng: number) {
+    // Placement is Map-only (Unit 7's "Done when"): List's opaque overlay
+    // stops a real click from ever reaching the map, but that's CSS, not a
+    // guarantee — this check is the actual mechanism, so the invariant holds
+    // even if the overlay is ever removed, resized, or z-index-regressed
+    // (see docs/reviews/unit 7.md F2).
+    if (activeView !== 'map') return;
     if (!armed) return;
 
     // Build the pin, then persist it, and only commit to UI state if the save
@@ -495,6 +535,8 @@ export default function App() {
         <h1 className="sidebar__brand">restaurant-map</h1>
         <p className="sidebar__tagline">Your restaurant leads, by strength.</p>
 
+        <ViewSwitcher view={activeView} onChange={setActiveView} />
+
         {/* Always visible, not gated behind any other state: this is the only
             way back once a saved pan/zoom has left every lead off screen, so
             it can't be one click behind an editor, a filter, or a banner. */}
@@ -600,22 +642,48 @@ export default function App() {
       {/* The armed cursor is set here rather than on MapContainer, which
           freezes its className at construction and would never show it. */}
       <main className={`map-pane${armed ? ' map-pane--armed' : ''}`}>
-        {/* Held back for the one render it takes to read the store: a map
-            created before the pins are known could only fit itself to them
-            afterwards, which is the re-fit this unit exists to avoid.
-            key={mapEpoch}: unchanged on every ordinary render, so this stays
-            the same mount-time fit — it only advances on a confirmed import,
-            which forces the remount that applies the recomputed view. */}
-        {initialView && (
-          <MapView
-            key={mapEpoch}
-            initialView={initialView}
-            pins={visiblePins}
-            selectedPinId={selectedPinId}
-            onMapClick={handleMapClick}
-            onSelectPin={handleSelectPin}
-            onViewChange={handleViewChange}
-          />
+        {/* The map's own wrapper is always rendered, List view or not:
+            MapView must never unmount on a view switch (see the `activeView`
+            state comment above), so `aria-hidden` + `inert` (applied in the
+            effect below, not conditional rendering) are what keep it out of
+            the accessibility tree AND the tab order while List covers it —
+            `aria-hidden` alone still left Leaflet's zoom buttons/markers/
+            attribution links tabbable and clickable-by-keyboard while
+            invisible, one of them able to silently rewrite the persisted map
+            view (docs/reviews/unit 7.md F4). */}
+        <div className="map-pane__map" aria-hidden={activeView === 'list'} ref={mapWrapperRef}>
+          {/* Held back for the one render it takes to read the store: a map
+              created before the pins are known could only fit itself to them
+              afterwards, which is the re-fit this unit exists to avoid.
+              key={mapEpoch}: unchanged on every ordinary render, so this stays
+              the same mount-time fit — it only advances on a confirmed import,
+              which forces the remount that applies the recomputed view. */}
+          {initialView && (
+            <MapView
+              key={mapEpoch}
+              initialView={initialView}
+              pins={visiblePins}
+              selectedPinId={selectedPinId}
+              onMapClick={handleMapClick}
+              onSelectPin={handleSelectPin}
+              onViewChange={handleViewChange}
+            />
+          )}
+        </div>
+
+        {/* Layered on top of (not instead of) the map above, so switching
+            back to Map never remounts it — see the `activeView` state
+            comment. `.list-pane` is opaque and covers the pane exactly
+            (`.map-pane` is position:relative for this), which also means a
+            covered map can't take clicks meant for the list. */}
+        {activeView === 'list' && (
+          <div className="list-pane">
+            <PinList
+              pins={visiblePins}
+              selectedPinId={selectedPinId}
+              onSelectPin={handleSelectPin}
+            />
+          </div>
         )}
       </main>
     </div>

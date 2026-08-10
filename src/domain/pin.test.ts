@@ -5,6 +5,7 @@ import {
   updatePin,
   replacePin,
   removePin,
+  sortPinsByName,
   InvalidPinError,
   PinNotFoundError,
   type Pin,
@@ -221,5 +222,61 @@ describe('removePin', () => {
   it('throws PinNotFoundError when no pin has that id', () => {
     expect(() => removePin([a, c], 'gone')).toThrow(PinNotFoundError);
     expect(() => removePin([], 'a')).toThrow(PinNotFoundError);
+  });
+});
+
+describe('sortPinsByName', () => {
+  const zebra: Pin = { id: 'z', name: 'Zebra Diner', lat: 1, lng: 1, strength: 'strong', notes: '' };
+  const apple: Pin = { id: 'a', name: 'apple bistro', lat: 2, lng: 2, strength: 'weak', notes: '' };
+  const mango: Pin = { id: 'm', name: 'Mango Grill', lat: 3, lng: 3, strength: 'failed', notes: '' };
+
+  // Core correctness, hand-checked: alphabetical, and case must not change
+  // the order ('apple bistro' sorts before 'Mango Grill' despite the lowercase a).
+  it('sorts alphabetically by name, case-insensitively', () => {
+    expect(sortPinsByName([zebra, apple, mango])).toEqual([apple, mango, zebra]);
+  });
+
+  it('does not mutate the input list', () => {
+    const pins = [zebra, apple, mango];
+    sortPinsByName(pins);
+    expect(pins).toEqual([zebra, apple, mango]);
+  });
+
+  // Reproducibility: sorting the same list twice gives an identical result.
+  it('is deterministic', () => {
+    const pins = [zebra, apple, mango];
+    expect(sortPinsByName(pins)).toEqual(sortPinsByName(pins));
+  });
+
+  // Edge case: names equal except for case keep their relative input order
+  // (a stable sort), rather than reordering nondeterministically on ties.
+  it('keeps the input order for names that are equal case-insensitively', () => {
+    const first: Pin = { id: '1', name: 'Cafe', lat: 0, lng: 0, strength: 'strong', notes: '' };
+    const second: Pin = { id: '2', name: 'CAFE', lat: 0, lng: 0, strength: 'weak', notes: '' };
+    expect(sortPinsByName([first, second])).toEqual([first, second]);
+    expect(sortPinsByName([second, first])).toEqual([second, first]);
+  });
+
+  it('returns an empty list for an empty input', () => {
+    expect(sortPinsByName([])).toEqual([]);
+  });
+
+  // Regression (docs/reviews/unit 7.md NIT): parsePin deliberately preserves
+  // leading/trailing whitespace on imported/legacy names for losslessness, so
+  // un-trimmed padding must not become a sort key — a padded name should sort
+  // where its real, visible letters put it, not before every other letter.
+  it('ignores leading/trailing whitespace when ordering (padding is not a sort key)', () => {
+    const padded: Pin = { id: 'p', name: '  Zulu Diner', lat: 0, lng: 0, strength: 'strong', notes: '' };
+    const cafe: Pin = { id: 'c', name: 'Cafe', lat: 0, lng: 0, strength: 'weak', notes: '' };
+    expect(sortPinsByName([padded, cafe])).toEqual([cafe, padded]);
+  });
+
+  // Regression (docs/reviews/unit 7.md NIT): plain lexicographic order would
+  // put "10 Downing" before "2 Fish Grill" (comparing the characters '1' and
+  // '2'), which reads as broken to a user scanning a numbered street.
+  it('orders numerically within names, not lexicographically ("2" before "10")', () => {
+    const ten: Pin = { id: 't', name: '10 Downing Bistro', lat: 0, lng: 0, strength: 'strong', notes: '' };
+    const two: Pin = { id: 'w', name: '2 Fish Grill', lat: 0, lng: 0, strength: 'weak', notes: '' };
+    expect(sortPinsByName([ten, two])).toEqual([two, ten]);
   });
 });
