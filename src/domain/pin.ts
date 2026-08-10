@@ -51,6 +51,30 @@ export function parsePin(raw: unknown): Pin {
   if (typeof r.name !== 'string') {
     throw new InvalidPinError('name must be a string');
   }
+  // createPin/updatePin have always rejected an empty (or whitespace-only)
+  // name; parsePin — the actual boundary untrusted data crosses — didn't,
+  // so a hand-edited or legacy record with name: '' could load and then get
+  // stuck: PinEditor disables Save until the name is non-empty, so nothing
+  // about that pin (not even notes) could be edited until it was renamed.
+  // Rejecting it here instead means it fails loud at the same boundary as
+  // every other corrupt field, consistent with the invariant the write path
+  // already enforces.
+  //
+  // KNOWN TRADE-OFF, chosen deliberately over coercing to a placeholder name:
+  // parsePin is the single validation boundary for THREE callers — loadPins
+  // (every page load), parseImportPayload (every Import), and Unit 6's
+  // planned file-link — and all three reject their ENTIRE input on the first
+  // bad record (see docs/roadmap.md's "never a partial import" rule). So one
+  // blank-named record anywhere in a stored/imported collection now fails
+  // the whole load or the whole import, not just that one pin. This can't
+  // happen through the app's own writes (createPin/updatePin always require
+  // a name); it requires the data to have been edited outside the app —
+  // directly in localStorage via devtools, or by hand in Unit 6's
+  // git-tracked file. See docs/reviews/uncommitted-2026-08-06-pinicon-parsepin.md
+  // F1 for the full analysis and the rejected alternatives.
+  if (r.name.trim().length === 0) {
+    throw new InvalidPinError('name must not be empty');
+  }
   if (!isFiniteNumber(r.lat) || r.lat < -90 || r.lat > 90) {
     throw new InvalidPinError('lat must be a finite number in [-90, 90]');
   }
@@ -72,9 +96,13 @@ export function parsePin(raw: unknown): Pin {
       `notes must be a string when present, got ${JSON.stringify(r.notes)}`,
     );
   }
-  // Deliberately NOT trimmed here: parsing must be lossless so that
-  // save -> load returns exactly what was stored. Normalization happens on the
-  // way in (createPin / updatePin), not on the way out.
+  // Deliberately NOT trimmed here — for `notes` below, and for `name` above
+  // (only checked for non-empty-after-trim, returned as-is): parsing must be
+  // lossless so that save -> load returns exactly what was stored.
+  // Normalization happens on the way in (createPin / updatePin), not on the
+  // way out. One consequence: a name that arrives with padding (e.g. from an
+  // imported file) keeps that padding until the pin is next saved through the
+  // editor, which trims it — the padding doesn't survive the first edit.
   const notes = r.notes === undefined ? '' : r.notes;
 
   return {

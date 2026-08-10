@@ -53,6 +53,20 @@ body,
   font-size: 0.85rem;
 }
 
+.sidebar__show-all {
+  display: inline-block;
+  margin-bottom: 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #2f6fed;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .banner--error {
   background: #fdecea;
   border: 1px solid #f5c6cb;

@@ -49,6 +49,10 @@ import {
   recallFileHandle,
   rememberFileHandle,
 } from './storage/fileHandleRegistry';
+import { backupCorruptStore, loadPins, savePins } from './storage/pinStore';
+import { importPins } from './storage/importExport';
+import { describeError } from './errors';
+import { clearView, loadView, saveView, type PersistedView } from './storage/viewStore';
 
 const storage: Storage = window.localStorage;
 
@@ -86,11 +90,18 @@ export default function App() {
   // local tool.
   const [deleteInfo, setDeleteInfo] = useState<{ pin: Pin } | null>(null);
 
-  // Where the map opens. Written exactly once, by the mount effect below, from
-  // the pins the app started with — never derived from `pins`, which changes on
-  // every save. `null` means "the store hasn't been read yet", and the map is
-  // not mounted until it has, so Leaflet is created already knowing what it has
-  // to show. See MapView for why that makes the fit a one-time event.
+  // Where the map opens. Written exactly once, by the mount effect below —
+  // never derived from `pins`, which changes on every save. `null` means "the
+  // store hasn't been read yet", and the map is not mounted until it has, so
+  // Leaflet is created already knowing what it has to show. See MapView for
+  // why that makes the fit a one-time event.
+  //
+  // Prefers wherever the map was last left (`loadView`) over fitting the
+  // pins: a returning user wants the neighbourhood they were just looking at,
+  // not to be zoomed back out to every lead they've ever saved. Fitting the
+  // pins (`initialViewForPins`) is the fallback for when there's no last
+  // position yet — first run, or right after an import (see
+  // handleImportReplace, which clears it deliberately).
   const [initialView, setInitialView] = useState<InitialView | null>(null);
 
   // Bumped only by a confirmed import (or, Unit 6, linking/reconnecting a
@@ -187,6 +198,7 @@ export default function App() {
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
       setLoadErrorBackend('localStorage');
+      setLoadError(describeError(e));
       // Snapshot the unreadable bytes NOW, while they still exist. Without
       // this, the map is empty, the only available action is "add a pin", and
       // that single click would overwrite every unrecoverable note in the store.
@@ -202,8 +214,42 @@ export default function App() {
     }
     // Both paths, once: an unreadable store shows no pins, and the default view
     // is exactly right for that. Set last so the map mounts knowing the pins.
-    setInitialView(initialViewForPins(loaded));
+    // A saved pan/zoom (loadView) wins over fitting the pins when present —
+    // see the state comment above — and is independent of whether the pins
+    // themselves loaded: it's a view preference, not pin data, so a corrupt
+    // pin store is no reason to also discard a perfectly good last position.
+    const persisted = loadView(storage);
+    setInitialView(
+      persisted
+        ? { kind: 'center', center: persisted.center, zoom: persisted.zoom }
+        : initialViewForPins(loaded),
+    );
   }, []);
+
+  // The map reports its own pan/zoom here whenever it settles (MapView's
+  // ViewPersister). Fire-and-forget: this never touches React state or
+  // triggers a re-render, so it cannot become a path that moves the map
+  // itself — it only ever records where the map already is.
+  function handleViewChange(view: PersistedView) {
+    saveView(storage, view);
+  }
+
+  /**
+   * The escape hatch a saved view otherwise has none of: without this, a pan
+   * or zoom that leaves every lead off screen persists across every future
+   * reload with nothing in the app able to undo it — the exact defect Unit 3
+   * Section A shipped to fix, reintroduced permanently by this unit having
+   * nowhere to send a stranded user back (see docs/reviews/persist map view
+   * across reloads.md F1). Re-fits to every saved pin through the same
+   * mapEpoch remount handleImportReplace already uses, and clears the saved
+   * view so this fit — not the position that stranded the user — is what a
+   * reload restores from here on, until the next real pan.
+   */
+  function handleShowAllLeads() {
+    setInitialView(initialViewForPins(pins));
+    setMapEpoch((epoch) => epoch + 1);
+    clearView(storage);
+  }
 
   /**
    * Read a linked file, parse it, and adopt it as the active backend —
@@ -536,6 +582,7 @@ export default function App() {
         loadFailure instanceof Error ? loadFailure.message : String(loadFailure),
       );
       setLoadErrorBackend('localStorage');
+      setLoadError(describeError(loadFailure));
       return [];
     }
   }
@@ -914,6 +961,14 @@ export default function App() {
     // (mapEpoch) to apply it, the same as a fresh mount would.
     setInitialView(initialViewForPins(imported));
     setMapEpoch((epoch) => epoch + 1);
+    // The pre-import pan/zoom says nothing about where the NEW pins are —
+    // possibly a different city entirely. Left in place, a reload right after
+    // this import (before any further panning) would honor that stale
+    // position over the fit we just computed above, landing on a patch of map
+    // with none of the just-restored pins visible. Clearing it makes that
+    // reload fall back to fitting the imported pins instead — correct by
+    // construction, not by hoping the user pans first.
+    clearView(storage);
     // The pin previously open in the editor may not exist in the replaced
     // set (or may exist under different data) — close it rather than editing
     // a lead that no longer matches what's on screen.
@@ -969,6 +1024,13 @@ export default function App() {
       <aside className="sidebar">
         <h1 className="sidebar__brand">restaurant-map</h1>
         <p className="sidebar__tagline">Your restaurant leads, by strength.</p>
+
+        {/* Always visible, not gated behind any other state: this is the only
+            way back once a saved pan/zoom has left every lead off screen, so
+            it can't be one click behind an editor, a filter, or a banner. */}
+        <button type="button" className="sidebar__show-all" onClick={handleShowAllLeads}>
+          Show all leads
+        </button>
 
         {loadError && (
           <div className="banner banner--error" role="alert">
@@ -1100,6 +1162,7 @@ export default function App() {
             selectedPinId={selectedPinId}
             onMapClick={handleMapClick}
             onSelectPin={handleSelectPin}
+            onViewChange={handleViewChange}
           />
         )}
       </main>
