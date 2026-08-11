@@ -143,6 +143,21 @@ export default function App() {
   // one fresh user-gesture click to confirm — browsers don't promise
   // permission survives a reload, so this is never auto-requested.
   const [reconnectHandle, setReconnectHandle] = useState<FileSystemFileHandle | null>(null);
+  // Bumped whenever the user abandons a link (Unlink / Forget this file).
+  // Async link work captures it before its first await and re-reads it after,
+  // which is the only way to notice a decision made *during* an await: a
+  // handler's closure can't see it, and the permission prompt is browser
+  // chrome that leaves the page clickable underneath (review F1). A ref, not
+  // state, precisely because it must be readable at resolve time rather than
+  // at the render that captured it.
+  const linkGeneration = useRef(0);
+  // True while a permission request is open. Disables Reconnect only —
+  // NOT "Forget this file", deliberately, though the review suggested both:
+  // an escape hatch that goes dead while a prompt is open re-creates, for the
+  // length of that prompt, exactly the dead end this control exists to
+  // remove. The generation check above is what makes the race safe; this
+  // just stops a second prompt stacking on the first.
+  const [reconnectPending, setReconnectPending] = useState(false);
   // Set while linking to a file that already has content: mirrors Unit 3B's
   // import-confirmation shape exactly, since adopting an existing file's
   // content is an import-replace of a different medium, not a new mechanism.
@@ -320,13 +335,14 @@ export default function App() {
   useEffect(() => {
     if (!isFileSystemAccessSupported()) return;
     let cancelled = false;
+    const generation = linkGeneration.current;
 
     (async () => {
       const handle = await recallFileHandle().catch(() => null);
       if (!handle || cancelled) return;
 
       const permission = await queryReadWritePermission(handle).catch(() => 'denied' as const);
-      if (cancelled) return;
+      if (cancelled || generation !== linkGeneration.current) return;
 
       if (permission === 'granted') {
         await adoptLinkedFile(handle);
@@ -343,10 +359,36 @@ export default function App() {
   async function handleReconnect() {
     if (!reconnectHandle) return;
     const handle = reconnectHandle;
+    // Captured BEFORE the await, compared after: the permission prompt is
+    // browser chrome and the page stays interactive underneath it, so the
+    // user can click "Forget this file" while it's open. Without this the
+    // resolved promise would adopt a handle the app has already forgotten —
+    // re-linking the abandoned file, with its IndexedDB record already
+    // deleted, so every pin written afterwards lands in a file the next
+    // reload won't reopen (review F1).
+    const generation = linkGeneration.current;
     setFileLinkError(null);
-    const permission = await requestReadWritePermission(handle).catch(() => 'denied' as const);
+    setReconnectPending(true);
+    let permission: PermissionState;
+    try {
+      permission = await requestReadWritePermission(handle).catch(() => 'denied' as const);
+    } finally {
+      setReconnectPending(false);
+    }
+    if (generation !== linkGeneration.current) return;
     if (permission !== 'granted') {
-      setFileLinkError('Permission to reconnect that file was not granted.');
+      // `requestPermission` resolves 'denied' both when the prompt is refused
+      // and when it's dismissed — clicking back into the page is enough to
+      // dismiss it — and the prompt itself renders in browser chrome, outside
+      // the page, so a user who never noticed it reads this as "the button did
+      // nothing". Name where the prompt is and that retrying is safe, rather
+      // than reporting a refusal the user may not know they made. The "where"
+      // lives in DataFileLink's paragraph, which is on screen alongside this —
+      // saying it twice is what review F9 caught.
+      setFileLinkError(
+        'Access to that file was not granted — choose “Allow” in the browser’s prompt, or ' +
+          'forget the file to link a different one.',
+      );
       return;
     }
     await adoptLinkedFile(handle);
@@ -364,25 +406,87 @@ export default function App() {
    * read here uses.
    */
   async function handleUnlink() {
-    await forgetFileHandle().catch(() => {});
+    // Invalidate any in-flight permission request before anything else, so a
+    // prompt answered after this point can't re-adopt what we're forgetting.
+    linkGeneration.current += 1;
+    const forgottenName = linkedHandle?.name ?? reconnectHandle?.name ?? 'that file';
+    // Was a file actually the active backend, or is this a reconnect-state
+    // forget where nothing was ever adopted? The two need different amounts
+    // of work, and doing the linked-state amount for the reconnect state is
+    // what review F4 caught: the app is ALREADY on localStorage showing its
+    // pins, so re-seeding, remounting the map and closing the editor are all
+    // changes with no data change behind them.
+    const wasLinked = linkedHandle !== null;
+
+    // The one operation this control exists to perform. Reporting its failure
+    // is not optional: the UI below switches to choose/create either way, so
+    // a swallowed rejection makes the app *assert* the handle was forgotten
+    // while the next reload strands the user on Reconnect again, with nothing
+    // said (review F2 — the same silent catch this change de-silenced for
+    // rememberFileHandle, left on the call that matters more).
+    let forgetWarning: string | null = null;
+    try {
+      await forgetFileHandle();
+    } catch (e) {
+      forgetWarning =
+        `Stopped using “${forgottenName}” here, but this browser couldn’t forget it ` +
+        `(${describeError(e)}). It may reappear as a reconnect prompt after a reload.`;
+    }
+
     setLinkedHandle(null);
     setReconnectHandle(null);
     setFileLinkError(null);
-    let seed: Pin[];
-    try {
-      seed = storedPinsForWrite();
-    } catch (e) {
-      setSaveError(
-        `Couldn’t switch back to browser storage: ${e instanceof Error ? e.message : String(e)}.`,
-      );
-      seed = [];
+    // A banner about the file we just stopped using is stale the moment it's
+    // forgotten — and `file-unreadable`'s copy ends "use Reconnect below to
+    // try the file again", pointing at a control this very action removes
+    // (review F3). A localStorage-origin error is left alone: that one is
+    // about the backend we're switching *to*, and is still true.
+    if (loadErrorBackend === 'file-unreadable' || loadErrorBackend === 'file-corrupt') {
+      setLoadError(null);
+      setLoadErrorBackend(null);
     }
-    setPins(seed);
-    setInitialView(initialViewForPins(seed));
-    setMapEpoch((epoch) => epoch + 1);
-    setSelectedPinId(null);
-    setArmed(false);
-    setImportInfo(null);
+    // Cleared before the re-seed below, not after, so a fresh failure from
+    // that read still surfaces.
+    setSaveError(null);
+
+    if (wasLinked) {
+      let seed: Pin[];
+      try {
+        seed = storedPinsForWrite();
+      } catch (e) {
+        setSaveError(`Couldn’t switch back to browser storage: ${describeError(e)}.`);
+        seed = [];
+      }
+      setPins(seed);
+      setInitialView(initialViewForPins(seed));
+      setMapEpoch((epoch) => epoch + 1);
+      setSelectedPinId(null);
+      setArmed(false);
+      setImportInfo(null);
+    }
+
+    if (forgetWarning !== null) setFileLinkError(forgetWarning);
+  }
+
+  /**
+   * Remember the handle for the next session, reporting a failure instead of
+   * swallowing it. Deliberately a warning, not an abort: a link whose handle
+   * can't be stored still works for this session, so refusing the link would
+   * cost the user something real. But it must not be silent — a sidebar that
+   * says "every read and write goes through this file" while the link is
+   * quietly one reload from evaporating is the kind of failure a user can
+   * only experience as data mysteriously reverting.
+   */
+  async function rememberLink(handle: FileSystemFileHandle): Promise<string | null> {
+    try {
+      await rememberFileHandle(handle);
+      return null;
+    } catch (e) {
+      return (
+        `Linked “${handle.name}”, but this browser couldn’t remember it for next time ` +
+        `(${describeError(e)}). You’ll need to link the file again after a reload.`
+      );
+    }
   }
 
   /**
@@ -453,13 +557,14 @@ export default function App() {
         );
         return;
       }
-      await rememberFileHandle(handle).catch(() => {});
+      const rememberWarning = await rememberLink(handle);
       setLinkedHandle(handle);
       setReconnectHandle(null);
       setPins(seed);
       setImportInfo(
         `Linked “${handle.name}”, seeded with your ${seed.length} existing ${leadNoun(seed.length)}.`,
       );
+      if (rememberWarning !== null) setFileLinkError(rememberWarning);
       return;
     }
 
@@ -526,7 +631,7 @@ export default function App() {
       setPendingFileLink(null);
       return;
     }
-    await rememberFileHandle(handle).catch(() => {});
+    const rememberWarning = await rememberLink(handle);
 
     setLinkedHandle(handle);
     setReconnectHandle(null);
@@ -551,6 +656,11 @@ export default function App() {
           : 'There was nothing shown before this link.'
       }`,
     );
+    // Kept last by preference, not necessity: nothing between the
+    // rememberLink call and here touches fileLinkError today (review F8
+    // caught the older comment claiming this ordering was load-bearing).
+    // The link succeeded; if it won't survive a reload, say so now.
+    if (rememberWarning !== null) setFileLinkError(rememberWarning);
   }
 
   function handleCancelFileLink() {
@@ -1101,6 +1211,7 @@ export default function App() {
             }
           }
           error={fileLinkError}
+          reconnectPending={reconnectPending}
           onChooseExisting={handleChooseExisting}
           onCreateNew={handleCreateNew}
           onReconnect={handleReconnect}
