@@ -9,6 +9,156 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-12 — [fixed] `main` was merged broken: repairing the Unit 6B → Unit 7 merge
+
+[fixed] **PR #14 (Unit 7) merged a tree that had not compiled since 2026-08-10, and `main`'s HEAD
+inherited it.** Found while re-checking status: `aacc750` fails `npm run typecheck` (3 errors),
+`npm run lint` (parse error), and loads only 15 of 16 test files — `src/App.test.tsx` was syntactically
+invalid, so **all ~83 App-level integration tests silently did not run** (`npm test` reported "179
+passed" while every Unit 7 *and* Unit 6B integration test was absent, not failing). Neither unit's
+logged gate was wrong when written; the breakage was introduced afterwards, by the merge itself.
+
+**Where it entered:** `6fb79e2` (Unit 7, reviewed and fixed) parses clean. `3e6aa76` ("Merge branch
+'main' into unit-7-multi-view-navigation" — pulling in Unit 6/6B) does not. That is the same botched
+merge episode that produced `9acd7a1` ("Fix duplicate imports left by botched Unit 6 merge in App.tsx")
+on `main`: main's half was repaired, the Unit 7 branch's half never was, and `1e71cf3` then `aacc750`
+carried it through unchanged (`git diff 1e71cf3 aacc750` is empty — the PR merge added nothing, it
+inherited a broken branch).
+
+**What the bad merge did**, in three places, none of which left conflict markers to notice:
+- `App.tsx` — Unit 7's `handleMapClick` was cut in half: its opening line and the F2 placement guard
+  (`if (activeView !== 'map') return;`) were left orphaned above `countStoredPins`'s doc comment, and
+  main's own `async handleMapClick` followed 40 lines later **without the guard**. So even read
+  charitably, Unit 7's second MAJOR fix was not in the merged tree at all.
+- `App.tsx` — the `{activeView === 'list' && (` block lost its closing `)}`, and a stale pre-Unit-7
+  copy of the `<MapView>` element was left duplicated after it.
+- `App.test.tsx` — the `inert` test (F4) and its enclosing Unit 7 `describe` lost both closers;
+  `describe('App — Unit 6: …')` began mid-block.
+
+[fixed] **Repaired by redoing the merge, not by patching the splices** — the damage was silent enough
+that patching what I could see would not have proven there was nothing left. Recomputed the 3-way merge
+of `76a5f13` (main, healthy) and `6fb79e2` (Unit 7, healthy) over their true base `282fb1a`, which
+produced 4 honest conflicts, and resolved each by hand: keep both sides' imports; keep main's
+`countStoredPins`/`pinsForExport`/`async handleMapClick` **with Unit 7's F2 guard restored as its first
+statement**; keep Unit 7's wrapper + `.list-pane` JSX (with main's more accurate "or Unit 6
+link/reconnect" epoch comment); keep both sides' appended `describe` blocks. Then diffed every other
+file touched on either side against a clean re-merge — all identical, so the code damage was confined
+to these two files.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean · `npm test` **262 passed** (16 files — was
+"179 passed (15 of 16 files)" on broken `main`; the 83 recovered tests are Unit 7's and Unit 6B's
+App-level suites) · `npm run build` succeeds. Unit 7's review fixes confirmed present in the repaired
+tree: F1 (`handleShowAllLeads` calls `setActiveView('map')`), F3 (`z-index: 1001`), F4 (the
+`toggleAttribute('inert', …)` effect). **Self-proving:** removed the F2 guard I had re-placed by hand
+and confirmed it fails exactly the test written for it ("does not place a pin … List view"), then
+restored — 262 green again.
+
+[fixed] **Two doc casualties of the same merge.** `CLAUDE.md`'s always-loaded status counted "Units
+built: 7" while still calling Unit 6B "not yet built" (the Unit 7 branch's copy won a text merge over
+main's); corrected, and "Next" now reads Unit 8 alone. `docs/progress_log.md` had lost its newest-first
+order — the 08-11 Unit 6B entry sat below the 08-09 Unit 7 one, and the `---` separator between them was
+eaten. Reordered and restored; no entry text changed.
+
+**Worth noting for next time:** every unit here was gated hard, and the defect still shipped, because
+nothing gates the *merge*. The unit gates all ran before `3e6aa76`. A CI check on the PR — or simply
+re-running `npm test` after any merge commit that touches `App.tsx` — is what would have caught this;
+`.claude/rules/00-process.md`'s "prose is not mechanism" applies to the merge step, which currently has
+no mechanism at all.
+
+---
+
+## 2026-08-11 — [built] [reviewed] [fixed] Unit 6B follow-up: the reconnect state was a dead end
+
+[built] Started from a real bug report, not a spec: "after a refresh the Reconnect button does not seem
+to do anything." Driving the user's own Chrome against the dev server settled several things the Unit 6
+review had to leave open (its F5), and turned up a defect neither the tests nor that review had caught.
+
+**What the real browser established** (the walkthrough Unit 6's close entry recorded as *not* completed —
+that entry is superseded on these three points):
+- **A real `FileSystemFileHandle` does survive a real IndexedDB round-trip.** Read back from
+  `restaurant-map.file-handle` → `handles` → `linked-file` after a reload: `constructor.name ===
+  'FileSystemFileHandle'`, `kind: 'file'`, live `queryPermission`/`getFile` methods. Unit 6B's headline
+  bullet, unproven until now (both halves of the old proof were mocks).
+- **`queryPermission` returns `'prompt'` after a reload**, so the mount effect correctly surfaces
+  Reconnect rather than auto-adopting — and **one Reconnect click plus "Allow" restored the file's pins**
+  (adopted, marker rendered, no error). The one-click bar in the spec holds.
+- **Once granted, a further reload auto-adopts with zero clicks** (permission stays granted while a tab of
+  the origin is open) — verified by reloading with the grant live.
+
+**Why "the button does nothing"**: `requestPermission()` renders its prompt in *browser chrome*, above the
+page, and resolves `'denied'` when that prompt is **dismissed** exactly as when it's refused — clicking
+back into the page is enough. The app did report it, in small red text above the button. Not a broken
+handle; a failure mode that looks like a no-op. (The reported correlation with `npm run dev` was not
+reproducible: no source file changed during that window, so Vite pushed no reload. The likelier
+explanation is that the first successful "Allow" makes every later reload silent, so whatever preceded it
+gets the credit.)
+
+**The defect found while testing**: in the reconnect state `DataFileLink` rendered `Reconnect` *instead
+of* the choose/create controls, with no Unlink (F8 had added that to the linked state only). A remembered
+handle that was renamed, deleted, or simply the wrong file left one button that could only fail and **no
+in-app way out** — clearing site data in DevTools was the only escape. Reproduced live: that browser was
+pinned to an old export (`restaurant-map-2026-08-04.json`, 1 pin) with no way to switch to the file the
+user was actually keeping (`data/pins.json`, 5 pins).
+
+[reviewed] Cold-context adversarial review:
+`docs/reviews/uncommitted-2026-08-10-reconnect-escape-hatch.md`. **Verdict: no** — the escape hatch held
+only on the happy path. 3 MAJOR + 3 MINOR + 2 NIT; all eight addressed below. The reviewer ran the suite,
+10 probes and 2 planted-violation mutations itself, and correctly caught that one of the shipped
+assertions was vacuous.
+
+[fixed] **MAJOR (F1) — `Forget this file` did not cancel an in-flight `Reconnect`.** `handleReconnect`
+captured the handle, awaited the prompt, and acted with no re-check; since the page stays interactive
+under a browser-chrome prompt, a grant landing after a Forget re-linked the abandoned file — whose
+IndexedDB record was already deleted — so later pins would write to a file the next reload won't reopen.
+Now a `linkGeneration` ref is captured before the await and compared after, on both the reconnect click
+and the startup adopt path. Reconnect is disabled while a request is open; **Forget deliberately is not**
+(the review suggested both) — an escape hatch that goes dead while a prompt is up re-creates, for the
+length of that prompt, the exact dead end this change exists to remove.
+
+[fixed] **MAJOR (F2) — a failed `forgetFileHandle` was swallowed** by the same `.catch(() => {})` this
+change had just de-silenced for `rememberFileHandle`, on the one call it exists to make: the UI asserted
+"forgotten" while the next reload stranded the user again. Now reported as a named warning.
+
+[fixed] **MAJOR (F3) — the `file-unreadable` banner outlived the button it points at.** `handleUnlink`
+cleared `fileLinkError` but not `loadError`, leaving "use Reconnect below to try the file again" standing
+after Forget removed Reconnect. File-origin errors (`file-unreadable` / `file-corrupt`) and a stale
+`saveError` are now cleared; a localStorage-origin error is deliberately left alone.
+
+[fixed] **MINOR (F4) — forgetting a never-adopted handle ran the full store-replace ceremony** (map
+remount + re-fit, editor closed, placement disarmed) for a state where no data changed — discarding an
+unsaved notes draft behind a button labelled "Forget this *file*". Now branched on whether anything was
+actually linked.
+
+[fixed] **MINOR (F5) — a shipped assertion was vacuous**: the map already showed localStorage's pin
+before the click, so `markers()).toHaveLength(1)` couldn't distinguish "re-read" from "nothing happened"
+(the reviewer's mutation M1 left it green). Replaced with an assertion that has teeth for the corrected
+behavior — an open editor with an unsaved draft survives the forget.
+
+[fixed] **MINOR (F6) — untested new paths**: added tests for the existing-file confirm path's warning, a
+failed forget, the race, and the banner clearing.
+
+[fixed] **MINOR (F7) — the browser evidence lived only in a code comment** and contradicted this log.
+This entry is the fix; the test comment now points here.
+
+[fixed] **NIT (F8, F9)** — a comment claimed an ordering constraint nothing enforced (reworded as a
+preference); the "top of the window" sentence appeared in both the error and the paragraph, rendering
+twice after a denied reconnect (kept in the paragraph only, which also removes the latent
+`getByText` multiple-match fragility in `DataFileLink.test.tsx`).
+
+**Self-proving — 5 planted/reverted this session.** Dropping F1's generation check, re-swallowing F2's
+forget failure, skipping F3's banner clear, and running F4's ceremony unconditionally each fail exactly
+the one test written to guard them; deleting the linked-state storage re-read still fails the
+pre-existing Unlink test, confirming F4's restructure didn't cost that coverage.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean · `npm test` **231 passed** (14 files; was
+222 — the Unit 6 close entry's "201 passed (12 files)" was written pre-merge and was already stale).
+
+**Still not verified in a real browser**: whether Chrome's permission prompt survives a click on the page
+(this is what decides whether F1's data-losing variant was reachable in practice, or only its benign
+twin), and the two-button reconnect row at the sidebar's width. Flagged rather than assumed.
+
+---
+
 ## 2026-08-10 — [reviewed] [fixed] Unit 7: Multi-view navigation — review closed
 
 [reviewed] Cold-context adversarial review (`docs/reviews/unit 7.md`, shasum `cc3f9abe…`): **Verdict:
@@ -112,95 +262,6 @@ saves through the same editor, and the filter narrows the list in lockstep with 
 throughout. Not marked done — awaiting the review.
 
 Next after review closes: Unit 6B or Unit 8 from `docs/roadmap.md`, or scope a new unit.
-## 2026-08-11 — [built] [reviewed] [fixed] Unit 6B follow-up: the reconnect state was a dead end
-
-[built] Started from a real bug report, not a spec: "after a refresh the Reconnect button does not seem
-to do anything." Driving the user's own Chrome against the dev server settled several things the Unit 6
-review had to leave open (its F5), and turned up a defect neither the tests nor that review had caught.
-
-**What the real browser established** (the walkthrough Unit 6's close entry recorded as *not* completed —
-that entry is superseded on these three points):
-- **A real `FileSystemFileHandle` does survive a real IndexedDB round-trip.** Read back from
-  `restaurant-map.file-handle` → `handles` → `linked-file` after a reload: `constructor.name ===
-  'FileSystemFileHandle'`, `kind: 'file'`, live `queryPermission`/`getFile` methods. Unit 6B's headline
-  bullet, unproven until now (both halves of the old proof were mocks).
-- **`queryPermission` returns `'prompt'` after a reload**, so the mount effect correctly surfaces
-  Reconnect rather than auto-adopting — and **one Reconnect click plus "Allow" restored the file's pins**
-  (adopted, marker rendered, no error). The one-click bar in the spec holds.
-- **Once granted, a further reload auto-adopts with zero clicks** (permission stays granted while a tab of
-  the origin is open) — verified by reloading with the grant live.
-
-**Why "the button does nothing"**: `requestPermission()` renders its prompt in *browser chrome*, above the
-page, and resolves `'denied'` when that prompt is **dismissed** exactly as when it's refused — clicking
-back into the page is enough. The app did report it, in small red text above the button. Not a broken
-handle; a failure mode that looks like a no-op. (The reported correlation with `npm run dev` was not
-reproducible: no source file changed during that window, so Vite pushed no reload. The likelier
-explanation is that the first successful "Allow" makes every later reload silent, so whatever preceded it
-gets the credit.)
-
-**The defect found while testing**: in the reconnect state `DataFileLink` rendered `Reconnect` *instead
-of* the choose/create controls, with no Unlink (F8 had added that to the linked state only). A remembered
-handle that was renamed, deleted, or simply the wrong file left one button that could only fail and **no
-in-app way out** — clearing site data in DevTools was the only escape. Reproduced live: that browser was
-pinned to an old export (`restaurant-map-2026-08-04.json`, 1 pin) with no way to switch to the file the
-user was actually keeping (`data/pins.json`, 5 pins).
-
-[reviewed] Cold-context adversarial review:
-`docs/reviews/uncommitted-2026-08-10-reconnect-escape-hatch.md`. **Verdict: no** — the escape hatch held
-only on the happy path. 3 MAJOR + 3 MINOR + 2 NIT; all eight addressed below. The reviewer ran the suite,
-10 probes and 2 planted-violation mutations itself, and correctly caught that one of the shipped
-assertions was vacuous.
-
-[fixed] **MAJOR (F1) — `Forget this file` did not cancel an in-flight `Reconnect`.** `handleReconnect`
-captured the handle, awaited the prompt, and acted with no re-check; since the page stays interactive
-under a browser-chrome prompt, a grant landing after a Forget re-linked the abandoned file — whose
-IndexedDB record was already deleted — so later pins would write to a file the next reload won't reopen.
-Now a `linkGeneration` ref is captured before the await and compared after, on both the reconnect click
-and the startup adopt path. Reconnect is disabled while a request is open; **Forget deliberately is not**
-(the review suggested both) — an escape hatch that goes dead while a prompt is up re-creates, for the
-length of that prompt, the exact dead end this change exists to remove.
-
-[fixed] **MAJOR (F2) — a failed `forgetFileHandle` was swallowed** by the same `.catch(() => {})` this
-change had just de-silenced for `rememberFileHandle`, on the one call it exists to make: the UI asserted
-"forgotten" while the next reload stranded the user again. Now reported as a named warning.
-
-[fixed] **MAJOR (F3) — the `file-unreadable` banner outlived the button it points at.** `handleUnlink`
-cleared `fileLinkError` but not `loadError`, leaving "use Reconnect below to try the file again" standing
-after Forget removed Reconnect. File-origin errors (`file-unreadable` / `file-corrupt`) and a stale
-`saveError` are now cleared; a localStorage-origin error is deliberately left alone.
-
-[fixed] **MINOR (F4) — forgetting a never-adopted handle ran the full store-replace ceremony** (map
-remount + re-fit, editor closed, placement disarmed) for a state where no data changed — discarding an
-unsaved notes draft behind a button labelled "Forget this *file*". Now branched on whether anything was
-actually linked.
-
-[fixed] **MINOR (F5) — a shipped assertion was vacuous**: the map already showed localStorage's pin
-before the click, so `markers()).toHaveLength(1)` couldn't distinguish "re-read" from "nothing happened"
-(the reviewer's mutation M1 left it green). Replaced with an assertion that has teeth for the corrected
-behavior — an open editor with an unsaved draft survives the forget.
-
-[fixed] **MINOR (F6) — untested new paths**: added tests for the existing-file confirm path's warning, a
-failed forget, the race, and the banner clearing.
-
-[fixed] **MINOR (F7) — the browser evidence lived only in a code comment** and contradicted this log.
-This entry is the fix; the test comment now points here.
-
-[fixed] **NIT (F8, F9)** — a comment claimed an ordering constraint nothing enforced (reworded as a
-preference); the "top of the window" sentence appeared in both the error and the paragraph, rendering
-twice after a denied reconnect (kept in the paragraph only, which also removes the latent
-`getByText` multiple-match fragility in `DataFileLink.test.tsx`).
-
-**Self-proving — 5 planted/reverted this session.** Dropping F1's generation check, re-swallowing F2's
-forget failure, skipping F3's banner clear, and running F4's ceremony unconditionally each fail exactly
-the one test written to guard them; deleting the linked-state storage re-read still fails the
-pre-existing Unlink test, confirming F4's restructure didn't cost that coverage.
-
-Verified: `npm run typecheck` clean · `npm run lint` clean · `npm test` **231 passed** (14 files; was
-222 — the Unit 6 close entry's "201 passed (12 files)" was written pre-merge and was already stale).
-
-**Still not verified in a real browser**: whether Chrome's permission prompt survives a click on the page
-(this is what decides whether F1's data-losing variant was reachable in practice, or only its benign
-twin), and the two-button reconnect row at the sidebar's width. Flagged rather than assumed.
 
 ---
 

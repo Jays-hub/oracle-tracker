@@ -81,8 +81,10 @@ uses. `MapView` is never unmounted by the switch — List layers over it instead
 survives a round trip through List and back. The review's two MAJORs are fixed: "Show all leads" now
 switches to Map so its effect (recovering a stranded view) is visible instead of silently firing behind
 List; and placement being Map-only is now enforced by an `activeView` check in `handleMapClick`, not
-only by the CSS overlay covering the map. Unit 6B "Git-syncable storage" and Unit 8 "Visual redesign" are
-scoped in `docs/roadmap.md`, not yet built. Two parked NITs — `pinIcon` memoization and a `parsePin`
-empty-name validation gap — were closed 2026-08-06, reviewed and fixed
+only by the CSS overlay covering the map. Unit 6B "Git-syncable storage" — **built, reviewed, fixes
+landed** (a sidebar control links storage to a git-tracked JSON file on disk via the File System Access
+API; the link is remembered across reloads and has an in-app escape hatch out of a broken one). Unit 8
+"Visual redesign" is scoped in `docs/roadmap.md`, not yet built. Two parked NITs — `pinIcon` memoization
+and a `parsePin` empty-name validation gap — were closed 2026-08-06, reviewed and fixed
 (`docs/reviews/uncommitted-2026-08-06-pinicon-parsepin.md`); the "Later" list is now empty.
-**Next:** Unit 6B or 8 from `docs/roadmap.md`, or scope a new unit.
+**Next:** Unit 8 from `docs/roadmap.md`, or scope a new unit.

@@ -5,9 +5,9 @@ import { PinEditor } from './components/PinEditor';
 import { Legend } from './components/Legend';
 import { ImportExport } from './components/ImportExport';
 import { PinFilterBar } from './components/PinFilterBar';
+import { DataFileLink } from './components/DataFileLink';
 import { PinList } from './components/PinList';
 import { ViewSwitcher, type MainView } from './components/ViewSwitcher';
-import { DataFileLink } from './components/DataFileLink';
 import {
   createPin,
   leadNoun,
@@ -772,13 +772,6 @@ export default function App() {
     }
   }
 
-  function handleMapClick(lat: number, lng: number) {
-    // Placement is Map-only (Unit 7's "Done when"): List's opaque overlay
-    // stops a real click from ever reaching the map, but that's CSS, not a
-    // guarantee — this check is the actual mechanism, so the invariant holds
-    // even if the overlay is ever removed, resized, or z-index-regressed
-    // (see docs/reviews/unit 7.md F2).
-    if (activeView !== 'map') return;
   /**
    * How many pins are actually in the active backend right now, or null if
    * it's unreadable. Used only to word an import/link confirmation or banner
@@ -820,6 +813,12 @@ export default function App() {
   }
 
   async function handleMapClick(lat: number, lng: number) {
+    // Placement is Map-only (Unit 7's "Done when"): List's opaque overlay
+    // stops a real click from ever reaching the map, but that's CSS, not a
+    // guarantee — this check is the actual mechanism, so the invariant holds
+    // even if the overlay is ever removed, resized, or z-index-regressed
+    // (see docs/reviews/unit 7.md F2).
+    if (activeView !== 'map') return;
     if (!armed) return;
 
     // Build the pin, then persist it, and only commit to UI state if the save
@@ -1313,8 +1312,9 @@ export default function App() {
               created before the pins are known could only fit itself to them
               afterwards, which is the re-fit this unit exists to avoid.
               key={mapEpoch}: unchanged on every ordinary render, so this stays
-              the same mount-time fit — it only advances on a confirmed import,
-              which forces the remount that applies the recomputed view. */}
+              the same mount-time fit — it only advances on a confirmed import
+              (or Unit 6 link/reconnect), which forces the remount that applies
+              the recomputed view. */}
           {initialView && (
             <MapView
               key={mapEpoch}
@@ -1341,23 +1341,6 @@ export default function App() {
               onSelectPin={handleSelectPin}
             />
           </div>
-        {/* Held back for the one render it takes to read the store: a map
-            created before the pins are known could only fit itself to them
-            afterwards, which is the re-fit this unit exists to avoid.
-            key={mapEpoch}: unchanged on every ordinary render, so this stays
-            the same mount-time fit — it only advances on a confirmed import
-            (or Unit 6 link/reconnect), which forces the remount that applies
-            the recomputed view. */}
-        {initialView && (
-          <MapView
-            key={mapEpoch}
-            initialView={initialView}
-            pins={visiblePins}
-            selectedPinId={selectedPinId}
-            onMapClick={handleMapClick}
-            onSelectPin={handleSelectPin}
-            onViewChange={handleViewChange}
-          />
         )}
       </main>
     </div>
