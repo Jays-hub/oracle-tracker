@@ -55,6 +55,26 @@ describe('DataFileLink — reconnect', () => {
     // The choose/create controls must not also be showing at the same time.
     expect(screen.queryByRole('button', { name: /choose existing file/i })).toBeNull();
   });
+
+  // Reconnect alone is a dead end: because this state replaces the
+  // choose/create controls, a remembered handle for a file that was renamed,
+  // deleted, or simply isn't the one you want now leaves the user with a
+  // single button that can only fail. Forgetting is the only exit, so it has
+  // to be reachable from here — not just from the linked state (F8).
+  it('offers a Forget control so a remembered handle is never a dead end', () => {
+    const onUnlink = vi.fn();
+    render(<DataFileLink {...baseProps} reconnectFileName="pins.json" onUnlink={onUnlink} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /forget this file/i }));
+    expect(onUnlink).toHaveBeenCalledTimes(1);
+  });
+
+  // The prompt renders in browser chrome, outside the page — a user who
+  // doesn't know to look there reads a dismissed prompt as a dead button.
+  it('says where the permission prompt appears', () => {
+    render(<DataFileLink {...baseProps} reconnectFileName="pins.json" />);
+    expect(screen.getByText(/top of the window/i)).toBeTruthy();
+  });
 });
 
 describe('DataFileLink — linked', () => {
