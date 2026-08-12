@@ -67,6 +67,35 @@ body,
   cursor: pointer;
 }
 
+/* View switcher ------------------------------------------------------------- */
+.view-switcher {
+  display: inline-flex;
+  gap: 2px;
+  margin-bottom: 16px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f4f6f8;
+}
+
+.view-switcher__button {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.view-switcher__button--active {
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
 .banner--error {
   background: #fdecea;
   border: 1px solid #f5c6cb;
@@ -531,11 +560,118 @@ body,
      keeps the pane wide enough that the fit always has room; a window narrower
      than sidebar + floor scrolls sideways instead. */
   min-width: 240px;
+  /* Anchors `.list-pane`, which covers this pane exactly (inset: 0) rather
+     than the whole viewport. */
+  position: relative;
+}
+
+/* Fills `.map-pane` exactly, same as `.map` below fills this — an extra layer
+   so List can be layered on top without ever unmounting MapView (see the
+   `activeView` state comment in App.tsx). Its own size never changes when
+   List shows or hides, so Leaflet never needs an `invalidateSize()` call. */
+.map-pane__map {
+  height: 100%;
+  width: 100%;
 }
 
 .map {
   height: 100%;
   width: 100%;
+}
+
+/* List view ------------------------------------------------------------------
+   Opaque and positioned to cover `.map-pane__map` exactly, so the map
+   underneath can neither be seen nor take clicks meant for the list — see the
+   `activeView` state comment in App.tsx. z-index: 1001, strictly ABOVE
+   Leaflet's own zoom control (`.leaflet-top`/`.leaflet-bottom`, which
+   Leaflet's own CSS sets to z-index: 1000) — not merely equal to it. At 1000
+   this only won by DOM sibling order (`.list-pane` renders after
+   `.map-pane__map`, and ties within one stacking context resolve by tree
+   order), which is a coincidence of markup order, not a guarantee: reorder
+   these two siblings, or Leaflet bump its own z-index, and the tie breaks
+   silently. 1001 removes the tie (docs/reviews/unit 7.md F3). */
+.list-pane {
+  position: absolute;
+  inset: 0;
+  z-index: 1001;
+  overflow-y: auto;
+  background: #fff;
+}
+
+.pin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pin-list__empty {
+  margin: 0;
+  padding: 24px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.pin-list__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 20px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.pin-list__row:hover {
+  background: #f4f6f8;
+}
+
+.pin-list__row--selected {
+  background: #eef4ff;
+}
+
+.pin-list__swatch {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.pin-list__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin-list__strength {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pin-list__notes {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin-list__notes--empty {
+  font-style: italic;
 }
 
 /* The armed cursor lives on the pane, NOT on .map: react-leaflet freezes

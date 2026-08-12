@@ -9,6 +9,109 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-10 — [reviewed] [fixed] Unit 7: Multi-view navigation — review closed
+
+[reviewed] Cold-context adversarial review (`docs/reviews/unit 7.md`, shasum `cc3f9abe…`): **Verdict:
+Yes**, with a caveat — read strictly, "the sidebar stays available in both views" doesn't hold for
+"Show all leads" (F1), which a stricter reader would call a BLOCKER. 2 MAJOR + 4 MINOR + 3 NIT. The
+reviewer ran the gate itself (matched the builder's claims exactly) plus probe suites against the real
+`App`/Leaflet/`Storage` shim in a scratch copy, and flagged the unit's central risk: the two invariants
+its whole design rests on (List opaquely covering the map; beating Leaflet's own control z-index) lived
+only in CSS that no test in this project can see.
+
+[fixed] All 2 MAJOR + 4 MINOR + 2 of 3 NIT findings landed:
+
+1. **MAJOR (F1) — "Show all leads" silently discarded the persisted view when clicked from List.**
+   Reproduced: seed a saved view, switch to List, click it — the view was cleared and the map
+   force-remounted with nothing visibly changing (List doesn't show the map). `handleShowAllLeads`
+   (`src/App.tsx`) now also calls `setActiveView('map')`, so its effect is where it's visible. New test
+   + in-browser reverification (Google Chrome): clicking it from List now switches to Map and shows the
+   re-fitted pins.
+2. **MAJOR (F2) — "placement is Map-only" was enforced only by a stylesheet, not code.** Reproduced:
+   armed a pin, switched to List, dispatched a click straight at `.leaflet-container` (bypassing the CSS
+   cover, which jsdom can't render anyway) — the pin was created and written to storage. `handleMapClick`
+   now checks `activeView !== 'map'` itself as its first line — a real guard, not just `.list-pane`'s
+   `background: #fff`. **Self-proving:** reverted the guard, confirmed the new test fails with exactly
+   the pin landing in storage; restored, confirmed clean.
+3. **MINOR (F3) — `.list-pane`'s `z-index: 1000` tied Leaflet's control layer instead of beating it**,
+   winning only by DOM sibling order — a coincidence the comment mischaracterized as the z-index itself
+   winning. Bumped to `z-index: 1001` (strictly above Leaflet's `1000`) and corrected the comment.
+   Reverified in Chrome: the zoom control no longer bleeds through the list.
+4. **MINOR (F4) — the `aria-hidden` map wrapper still held 7 tabbable controls**, one of which (a zoom
+   button) was confirmed to silently rewrite the persisted view when activated while covered. Added
+   `inert`, toggled via a ref effect (`src/App.tsx`) since React 18 has no `inert` JSX prop — and,
+   discovered while fixing this, the `.inert` IDL property doesn't reflect to the attribute in this
+   project's jsdom (`el.inert = true` left `getAttribute('inert')` `null`), so the fix uses
+   `toggleAttribute('inert', …)` instead, which works in both. Reverified in Chrome: tabbing from the
+   search box through the whole sidebar never lands inside the covered map.
+5. **MINOR (F5) — `previewNotes` sliced UTF-16 code units**, so a surrogate-pair character (most emoji)
+   landing on the truncation boundary split into a lone unpaired surrogate, rendering as a replacement
+   glyph. Now slices via `Array.from` (code points); new hand-computed boundary test.
+6. **MINOR (F6) — no test asserted strength→color on the new List surface** (correct today, but
+   unguarded against `CLAUDE.md` #3's total/fixed mapping). Added a color assertion per strength to
+   `PinList.test.tsx`.
+7. **NIT — sorting had three surprising cases**: un-trimmed padding sorted before every letter, and no
+   numeric collation (`"10 Downing"` before `"2 Fish"`). `sortPinsByName` now compares on `name.trim()`
+   with `{ numeric: true }`; two new tests. (The third NIT, locale-dependent ordering, is inherent to
+   `localeCompare` and not fixed.)
+8. **NIT — list rows had a run-together accessible name** (adjacent `<span>`s with no separators). Added
+   an explicit `aria-label` per row.
+
+Not fixed, by design: the MINOR "a search hit past the 80-char preview can look unexplained" (cosmetic,
+reviewer confirmed no fix needed for this bar) and the NIT "two truncation mechanisms can disagree"
+(reviewer's own confidence was "medium — a judgment call, not a defect"; the CSS ellipsis is a real
+layout-safety net, not redundant ceremony, so it stays).
+
+Re-ran the gate: `npm run typecheck` clean · `npm run lint` clean · `npm test` **195 passed** (13 files;
+was 187) · `npm run build` succeeds (90 modules, 318.09 kB JS). **Self-proving for both MAJORs:** F1's
+and F2's fixes were each reverted, confirmed the corresponding new test fails (F1: `aria-pressed` stays
+`false`; F2: a "Ghost Lead" lands in storage), then restored, suite clean. **In-browser reverification**
+(Google Chrome) covered every finding CSS/focus-behavior touches — the exact class of bug jsdom can't
+see: F1 (Show all leads now switches to Map and shows the re-fitted pins), F3 (zoom control no longer
+bleeds through the list), F4 (tabbing from the sidebar never reaches the covered map's controls; `inert`
+attribute confirmed present). Console clean throughout.
+
+**Unit 7 is done and mergeable.**
+
+Next: Unit 6B or Unit 8 from `docs/roadmap.md`, or scope a new unit.
+
+---
+
+## 2026-08-09 — [built] Unit 7: Multi-view navigation
+
+[built] A List view alongside the existing Map view: a sidebar `ViewSwitcher` (Map/List) toggles the
+main pane between them, List shows every currently-visible pin (respecting the active filter/search,
+same AND semantics, same "Showing N of M" wording as the map) as alphabetical rows of name / strength /
+notes preview, and clicking a row opens the exact same `PinEditor` the map's markers do. Placing a new
+pin stays Map-only, by construction: List physically covers the map while active, so a click can't land
+on it.
+
+Artifacts: `src/components/ViewSwitcher.tsx` (+ 3 tests), `src/components/PinList.tsx` (+ 10 tests),
+`src/domain/pin.ts`'s new `sortPinsByName` (+ 5 tests in `pin.test.ts`), `src/App.tsx` (new `activeView`
+state, main pane restructured), `src/index.css` (`.view-switcher*`, `.list-pane`/`.pin-list*`, new
+`.map-pane__map` wrapper). 5 new integration tests in `App.test.tsx`. Decision log:
+`docs/build_notes/unit 7.md`.
+
+[decided] **`MapView` is never unmounted by a view switch — `PinList` is layered on top of it, not
+swapped in for it.** The obvious naive approach (conditionally render one or the other) would remount
+`MapView` every time the user returns to Map, reopening it on the mount-time `initialView` and silently
+discarding any pan/zoom done since — a real regression Unit 6 ("persist the map view") shipped
+specifically to prevent. Fixed by wrapping `MapView` in a permanently-mounted `.map-pane__map` and
+covering it with an opaque, higher-z-index `.list-pane` only while List is active (`aria-hidden`, not
+conditional rendering, keeps it out of the accessibility tree). Verified directly: pan the real Leaflet
+map, switch List → Map, assert the `.leaflet-container` DOM node identity and center/zoom are unchanged.
+Full reasoning in the decision log's "Load-bearing assumptions" #1.
+
+Re-ran the gate: `npm run typecheck` clean · `npm run lint` clean · `npm test` **187 passed** (13 files;
+was 164/11) · `npm run build` succeeds (90 modules, 317.82 kB JS). **In-browser verification (Google
+Chrome) caught a real bug the test suite couldn't**: `.list-pane`'s first-pass `z-index: 1` left
+Leaflet's own zoom control (`z-index: 1000` in Leaflet's CSS) visibly floating over the list, still
+clickable — invisible to jsdom, which does no layout/paint. Fixed to `z-index: 1000`, reverified in
+Chrome: list now fully covers the map, a pan survives a List→Map round trip, clicking a row opens and
+saves through the same editor, and the filter narrows the list in lockstep with the map. Console clean
+throughout. Not marked done — awaiting the review.
+
+Next after review closes: Unit 6B or Unit 8 from `docs/roadmap.md`, or scope a new unit.
 ## 2026-08-11 — [built] [reviewed] [fixed] Unit 6B follow-up: the reconnect state was a dead end
 
 [built] Started from a real bug report, not a spec: "after a refresh the Reconnect button does not seem

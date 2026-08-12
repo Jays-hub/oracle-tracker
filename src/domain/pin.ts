@@ -35,6 +35,34 @@ export function leadNoun(n: number): 'lead' | 'leads' {
 }
 
 /**
+ * `pins` sorted alphabetically by name, case-insensitive — the List view's
+ * default order (`docs/roadmap.md` Unit 7: "a sensible default order" so
+ * leads aren't presented in arbitrary/insertion order). Does not mutate its
+ * input.
+ *
+ * Compares on `name.trim()`, not the raw name: `parsePin` deliberately keeps
+ * leading/trailing whitespace on imported/legacy records for losslessness
+ * (see `parsePin`'s own comment), and un-trimmed padding would otherwise sort
+ * before every real letter — surprising, since it's invisible in the row.
+ * `numeric: true` makes "2 Fish" sort before "10 Downing" rather than after
+ * (plain lexicographic order would put "10" first) (docs/reviews/unit 7.md
+ * NIT).
+ *
+ * `Array.prototype.sort` has been a stable sort since ES2019, so pins whose
+ * trimmed names are equal under `sensitivity: 'base'` (same letters,
+ * different case, or genuine duplicates) keep their relative order from
+ * `pins` rather than shuffling on every call — the result is deterministic
+ * for a given input.
+ */
+export function sortPinsByName(pins: Pin[]): Pin[] {
+  return [...pins].sort((a, b) =>
+    a.name
+      .trim()
+      .localeCompare(b.name.trim(), undefined, { sensitivity: 'base', numeric: true }),
+  );
+}
+
+/**
  * Validate an untrusted value (e.g. a JSON-parsed record from storage) into a
  * Pin, or throw InvalidPinError. This is the boundary that keeps corrupt data
  * from ever becoming a live pin.

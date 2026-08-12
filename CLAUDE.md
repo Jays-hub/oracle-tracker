@@ -55,7 +55,7 @@ _(These scripts land with the first build unit, which scaffolds the Vite app.)_
 
 ## Current status
 Stack: React + Vite + TypeScript + Leaflet + OSM tiles, `localStorage` persistence, Vitest +
-ESLint/`tsc`. **Units built: 6.** Unit 1 "Map + colored pins" and Unit 2 "notes + editing per pin" —
+ESLint/`tsc`. **Units built: 7.** Unit 1 "Map + colored pins" and Unit 2 "notes + editing per pin" —
 reviewed, fixed, merged. Unit 3 "See it all, and keep it" — **built, reviewed, fixes landed**: (A) the
 map fits itself to every saved pin on load instead of opening over a hardcoded NYC center; (B) a
 sidebar Backup control exports every pin to a dated JSON file and imports one back as a confirmed
@@ -74,8 +74,15 @@ DONE-WHEN "see it rendered" bar holds even mid-filter. Unit 6A "Persist the map 
 every saved pin, with a sidebar "Show all leads" control as the escape hatch back to the fit-to-pins
 view (the review's BLOCKER: a saved view winning unconditionally had no way back otherwise). The
 saved view is wrapped past the antimeridian and only persists on a real drag/zoom gesture, not an
-incidental window resize. Unit 6B "Git-syncable storage", Unit 7 "Multi-view navigation", and Unit 8
-"Visual redesign" are scoped in `docs/roadmap.md`, not yet built. Two parked NITs — `pinIcon`
-memoization and a `parsePin` empty-name validation gap — were closed 2026-08-06, reviewed and fixed
+incidental window resize. Unit 7 "Multi-view navigation" — **built, reviewed, fixes landed**: a sidebar
+Map/List switcher; List shows every currently-visible pin (same filter/search as the map) as
+alphabetical rows of name/strength/notes-preview, and clicking one opens the same `PinEditor` the map
+uses. `MapView` is never unmounted by the switch — List layers over it instead — so a mid-session pan
+survives a round trip through List and back. The review's two MAJORs are fixed: "Show all leads" now
+switches to Map so its effect (recovering a stranded view) is visible instead of silently firing behind
+List; and placement being Map-only is now enforced by an `activeView` check in `handleMapClick`, not
+only by the CSS overlay covering the map. Unit 6B "Git-syncable storage" and Unit 8 "Visual redesign" are
+scoped in `docs/roadmap.md`, not yet built. Two parked NITs — `pinIcon` memoization and a `parsePin`
+empty-name validation gap — were closed 2026-08-06, reviewed and fixed
 (`docs/reviews/uncommitted-2026-08-06-pinicon-parsepin.md`); the "Later" list is now empty.
-**Next:** Unit 6B, 7, or 8 from `docs/roadmap.md`, or scope a new unit.
+**Next:** Unit 6B or 8 from `docs/roadmap.md`, or scope a new unit.
