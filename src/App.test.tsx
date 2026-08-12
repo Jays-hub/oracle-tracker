@@ -1815,6 +1815,210 @@ describe('App — Unit 6: sync via a linked data file', () => {
     expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeTruthy(); // can retry
   });
 
+  // A remembered handle hides the choose/create controls until it
+  // reconnects, so a file that was renamed, deleted, or is simply the wrong
+  // one now strands the user on a button that can only fail — with no in-app
+  // way to link a different file. Confirmed by hand in Chrome on 2026-08-10:
+  // clearing site data in DevTools was the only escape (see
+  // docs/progress_log.md for exactly what that session did and didn't
+  // establish).
+  it('lets a stale remembered handle be forgotten, restoring the choose/create controls', async () => {
+    seed([alpha]);
+    const handle = fakeFileHandle('[]', { permission: 'prompt', requestResult: 'denied' });
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(handle);
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /forget this file/i })).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /forget this file/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose existing file/i })).toBeTruthy(),
+    );
+    expect(fileHandleRegistry.forgetFileHandle).toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /^reconnect$/i })).toBeNull();
+    expect(markers()).toHaveLength(1); // localStorage's pin, still readable
+  });
+
+  // Review F4: in the reconnect state nothing was ever adopted — the app is
+  // already on localStorage, already showing its pins — so forgetting is
+  // bookkeeping, not a store replace. Running the linked-state ceremony here
+  // remounts the map (yanking the view away with no data reason) and closes
+  // the editor, discarding an unsaved notes draft, for a button labelled
+  // "Forget this *file*". The open editor is the assertion with teeth: it
+  // survives only if the ceremony is skipped.
+  it('forgetting a never-adopted handle leaves the map and an open editor alone', async () => {
+    seed([alpha]);
+    const handle = fakeFileHandle('[]', { permission: 'prompt', requestResult: 'denied' });
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(handle);
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /forget this file/i })).toBeTruthy(),
+    );
+    // Open the editor and type a note the user has NOT saved yet.
+    fireEvent.click(markers()[0]);
+    const notes = screen.getByPlaceholderText(/what happened on the visit/i);
+    fireEvent.change(notes, { target: { value: 'half-typed thought' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /forget this file/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose existing file/i })).toBeTruthy(),
+    );
+    expect(screen.getByDisplayValue('half-typed thought')).toBeTruthy();
+  });
+
+  // Review F2: the UI switches to choose/create whether or not the delete
+  // succeeded, so a swallowed rejection makes the app *assert* the handle is
+  // forgotten while the next reload strands the user on Reconnect again —
+  // the exact state they used DevTools to escape — with nothing said.
+  it('reports a failed forget instead of claiming the handle was forgotten', async () => {
+    seed([alpha]);
+    const handle = fakeFileHandle('[]', { permission: 'prompt', requestResult: 'denied' });
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(handle);
+    vi.mocked(fileHandleRegistry.forgetFileHandle).mockRejectedValue(
+      new Error('IndexedDB unavailable'),
+    );
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /forget this file/i })).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /forget this file/i }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/couldn’t forget it/i);
+    expect(alert.textContent).toMatch(/may reappear/i);
+    expect(alert.textContent).toMatch(/IndexedDB unavailable/);
+  });
+
+  // Review F1: the permission prompt is browser chrome and the page stays
+  // interactive underneath it, so Forget is clickable while it's open. If the
+  // grant then lands, an unguarded handleReconnect adopts the handle the user
+  // just abandoned — whose IndexedDB record is already deleted — so every pin
+  // written afterwards goes to a file the next reload will not reopen.
+  it('a permission grant landing after Forget does not re-link the abandoned file', async () => {
+    seed([alpha]);
+    const fromFile: Pin = {
+      id: 'f',
+      name: 'From File',
+      lat: 10,
+      lng: 10,
+      strength: 'strong',
+      notes: '',
+    };
+    const handle = fakeFileHandle(serializePins([fromFile]), { permission: 'prompt' });
+    // Hand-controlled prompt: resolves only when the test says so, modelling
+    // a bubble the user leaves open while clicking elsewhere on the page.
+    let grantPrompt!: () => void;
+    handle.requestPermission = () =>
+      new Promise<PermissionState>((resolve) => {
+        grantPrompt = () => resolve('granted');
+      });
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(handle);
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /^reconnect$/i })).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /^reconnect$/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /waiting for permission/i })).toBeTruthy(),
+    );
+    // The escape hatch stays clickable while the prompt is open — deliberately
+    // not disabled alongside Reconnect, or abandoning a stuck prompt would be
+    // impossible for as long as it hangs.
+    fireEvent.click(screen.getByRole('button', { name: /forget this file/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose existing file/i })).toBeTruthy(),
+    );
+
+    grantPrompt();
+    await waitFor(() => expect(fileHandleRegistry.forgetFileHandle).toHaveBeenCalled());
+
+    // Still unlinked, still on localStorage — the late grant changed nothing.
+    expect(screen.getByRole('button', { name: /choose existing file/i })).toBeTruthy();
+    expect(screen.queryByText(/linked to “pins\.json”/i)).toBeNull();
+    expect(markers()).toHaveLength(1);
+    fireEvent.click(markers()[0]);
+    expect(screen.getByDisplayValue('Alpha Cafe')).toBeTruthy();
+  });
+
+  // Review F3: `file-unreadable`'s banner ends "use Reconnect below to try
+  // the file again" — a control Forget removes. Left standing it reports an
+  // active linked-file problem on an app that is now correctly running on
+  // browser storage, pointing at a button that no longer exists.
+  it('clears a file-origin error banner when the file is forgotten', async () => {
+    seed([alpha]);
+    const handle = fakeFileHandle('[]', { permission: 'granted' });
+    handle.getFile = () => Promise.reject(new Error('NotFoundError'));
+    vi.mocked(fileHandleRegistry.recallFileHandle).mockResolvedValue(handle);
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toMatch(/use reconnect below/i),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /forget this file/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /choose existing file/i })).toBeTruthy(),
+    );
+    expect(screen.queryByText(/use reconnect below/i)).toBeNull();
+    expect(markers()).toHaveLength(1); // localStorage, still active and readable
+  });
+
+  // The link works for this session either way, so this is a warning rather
+  // than an abort — but it must not be the silent `.catch(() => {})` it was:
+  // the sidebar otherwise promises "every read and write goes through this
+  // file" while the link is one reload from evaporating with no explanation.
+  it('warns, rather than silently swallowing, when the handle cannot be remembered for next session', async () => {
+    seed([alpha]);
+    render(<App />);
+    const handle = fakeFileHandle('');
+    mockSavePicker(handle);
+    vi.mocked(fileHandleRegistry.rememberFileHandle).mockRejectedValue(
+      new Error('IndexedDB unavailable'),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /create new file/i }));
+
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/couldn’t remember it for next time/i);
+    expect(alert.textContent).toMatch(/IndexedDB unavailable/);
+    // The link itself still took effect — the warning is not a rollback.
+    expect(JSON.parse(handle.committed)).toEqual([alpha]);
+  });
+
+  // Review F6: the warning above covers only the create-new/empty-file
+  // branch. Linking an existing file goes through handleConfirmFileLink,
+  // which has its own rememberLink call site and its own ordering — an
+  // untested second path where the same silence could return.
+  it('warns about an unrememberable handle on the existing-file link path too', async () => {
+    seed([alpha]);
+    render(<App />);
+    const handle = fakeFileHandle(serializePins([gamma]));
+    mockOpenPicker(handle);
+    vi.mocked(fileHandleRegistry.rememberFileHandle).mockRejectedValue(
+      new Error('IndexedDB unavailable'),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /choose existing file/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /link file/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /link file/i }));
+
+    await waitFor(() => expect(screen.getByText(/linked to “pins\.json”/i)).toBeTruthy());
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/couldn’t remember it for next time/i);
+    expect(alert.textContent).toMatch(/IndexedDB unavailable/);
+  });
+
   // A hard read failure on an ALREADY-linked file (permission revoked, the
   // file moved or was deleted mid-session) is deliberately NOT the same as a
   // denied reconnect at startup: there's no safe automatic fallback to

@@ -26,6 +26,7 @@ export function DataFileLink({
   reconnectFileName,
   pendingLink,
   error,
+  reconnectPending = false,
   onChooseExisting,
   onCreateNew,
   onReconnect,
@@ -40,6 +41,10 @@ export function DataFileLink({
   reconnectFileName: string | null;
   pendingLink: PendingFileLink | null;
   error: string | null;
+  /** A permission request is open. Disables Reconnect so a second prompt
+   * can't stack on the first — never "Forget this file", which has to stay
+   * clickable precisely while a prompt the user wants to abandon is up. */
+  reconnectPending?: boolean;
   onChooseExisting: () => void;
   onCreateNew: () => void;
   onReconnect: () => void;
@@ -93,10 +98,24 @@ export function DataFileLink({
         </div>
       ) : reconnectFileName ? (
         <div className="data-file-link__reconnect">
-          <p>This browser was linked to “{reconnectFileName}”.</p>
-          <button type="button" onClick={onReconnect}>
-            Reconnect
-          </button>
+          <p>
+            This browser was linked to “{reconnectFileName}”. Reconnecting asks the browser
+            for permission — its prompt opens at the top of the window, outside the page.
+          </p>
+          {/* "Forget" is not a convenience here, it's the only exit. Without it a
+              remembered handle hides the choose/create controls indefinitely: a file
+              that was renamed, deleted, or simply isn't the one you want now leaves
+              Reconnect as the sole control, and it can only ever fail. Same handler
+              the linked state's Unlink uses — forget the handle, fall back to
+              browser storage, which restores the controls below. */}
+          <div className="data-file-link__actions">
+            <button type="button" onClick={onReconnect} disabled={reconnectPending}>
+              {reconnectPending ? 'Waiting for permission…' : 'Reconnect'}
+            </button>
+            <button type="button" className="data-file-link__unlink" onClick={onUnlink}>
+              Forget this file
+            </button>
+          </div>
         </div>
       ) : (
         <div className="data-file-link__actions">
