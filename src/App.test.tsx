@@ -1401,196 +1401,6 @@ describe('App — filter/search narrows the map', () => {
   });
 });
 
-describe('App — multi-view navigation (List view)', () => {
-  const gamma: Pin = {
-    id: 'g',
-    name: 'Gamma Tavern',
-    lat: 40.73,
-    lng: -74.03,
-    strength: 'failed',
-    notes: 'Great wine list, shame it closed.',
-  };
-
-  function switchTo(view: 'Map' | 'List') {
-    fireEvent.click(screen.getByRole('button', { name: view }));
-  }
-  function listRows(): HTMLElement[] {
-    return Array.from(document.querySelectorAll('.pin-list__row'));
-  }
-
-  // The headline safety claim: List is layered on top of the map, not
-  // swapped in for it, so a mid-session pan survives a round trip through
-  // List and back — the same DOM node proves MapView itself never unmounted
-  // (a remount would create a brand new Leaflet container and re-fit/re-open
-  // on the persisted view, silently discarding wherever the user had panned
-  // to). Same `captureLeafletMap` + real `setView` technique the filter
-  // suite's "never moves or re-fits the map" test uses.
-  it('layers List over the map without ever unmounting it, so a pan survives the round trip', () => {
-    seed([alpha, beta]);
-    const map = captureLeafletMap(() => render(<App />));
-    expect(markers()).toHaveLength(2);
-    expect(document.querySelector('.pin-list')).toBeNull();
-    const mapNode = document.querySelector('.leaflet-container');
-
-    act(() => {
-      map.setView([48.8566, 2.3522], 9); // Paris — nowhere near the seeded pins
-    });
-    const center = map.getCenter();
-    const zoom = map.getZoom();
-
-    switchTo('List');
-    expect(listRows()).toHaveLength(2);
-    // The map's wrapper is still in the DOM (never unmounted) but out of the
-    // accessibility tree while covered.
-    expect(document.querySelector('.map-pane__map')?.getAttribute('aria-hidden')).toBe(
-      'true',
-    );
-    expect(document.querySelector('.leaflet-container')).toBe(mapNode);
-
-    switchTo('Map');
-    expect(document.querySelector('.pin-list')).toBeNull();
-    expect(document.querySelector('.map-pane__map')?.getAttribute('aria-hidden')).toBe(
-      'false',
-    );
-    // Same node — not a fresh MapContainer — and the pan is exactly as left.
-    expect(document.querySelector('.leaflet-container')).toBe(mapNode);
-    expect(map.getCenter().lat).toBeCloseTo(center.lat);
-    expect(map.getCenter().lng).toBeCloseTo(center.lng);
-    expect(map.getZoom()).toBe(zoom);
-  });
-
-  // Same AND semantics, same "Showing N of M" wording as the map (Unit 7's
-  // "Done when"): List is read over the same `visiblePins` MapView gets, not
-  // a second, independently-filtered copy of the pins.
-  it('respects the active filter/search exactly as the map does', () => {
-    seed([alpha, beta, gamma]); // strong, weak, failed
-    render(<App />);
-    switchTo('List');
-    expect(listRows()).toHaveLength(3);
-
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Weak' }));
-    expect(listRows()).toHaveLength(2);
-    expect(screen.getByText(/showing 2 of 3 leads/i)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Weak' })); // back to all 3
-    fireEvent.change(screen.getByRole('searchbox', { name: /search leads/i }), {
-      target: { value: 'wine' },
-    });
-    expect(listRows()).toHaveLength(1); // only gamma mentions wine
-    expect(listRows()[0].textContent).toContain('Gamma Tavern');
-  });
-
-  // Nothing pin-specific is duplicated for the list: clicking a row routes
-  // through the exact same handleSelectPin the map's markers use, opening
-  // the exact same PinEditor.
-  it('clicking a row opens the same PinEditor the map uses, seeded from the clicked pin', () => {
-    seed([alpha, beta]);
-    render(<App />);
-    switchTo('List');
-
-    fireEvent.click(screen.getByText('Beta Grill'));
-
-    expect(screen.getByDisplayValue('Beta Grill')).toBeTruthy();
-    expect(notesBox().value).toBe(beta.notes);
-  });
-
-  it('keeps the selected pin’s editor open across a view switch either way', () => {
-    seed([alpha, beta]);
-    render(<App />);
-    fireEvent.click(markers()[0]); // select alpha via the map
-    expect(screen.getByDisplayValue('Alpha Cafe')).toBeTruthy();
-
-    switchTo('List');
-    expect(screen.getByDisplayValue('Alpha Cafe')).toBeTruthy(); // same pin, still open
-
-    switchTo('Map');
-    expect(screen.getByDisplayValue('Alpha Cafe')).toBeTruthy();
-  });
-
-  // Pure UI/read state, per Unit 7's "Done when": switching views must not
-  // write to storage or disturb a placement the user is mid-way through
-  // arming.
-  it('switching views touches neither storage nor an in-progress add-pin draft', () => {
-    seed([alpha, beta]);
-    render(<App />);
-
-    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
-      target: { value: 'Third Lead' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
-    expect(screen.getByText(/click the map to place/i)).toBeTruthy();
-    const before = stored();
-
-    switchTo('List');
-    switchTo('Map');
-
-    expect(screen.getByText(/click the map to place “third lead”/i)).toBeTruthy();
-    expect(stored()).toEqual(before);
-  });
-
-  // Regression (docs/reviews/unit 7.md F1): "Show all leads" re-fits and
-  // force-remounts the map, but that entire effect used to be invisible from
-  // List, where nothing on screen changes — a filtered-list user could
-  // silently discard a saved pan with the button they'd click expecting
-  // "clear the filter". It must switch to Map so its effect is observable.
-  it('"Show all leads" switches to Map view, so its effect is actually visible from List', () => {
-    seed([alpha, beta]);
-    window.localStorage.setItem(
-      VIEW_STORAGE_KEY,
-      JSON.stringify({ center: [0, -150], zoom: 5 }), // mid-Pacific, nowhere near the seeded leads
-    );
-    render(<App />);
-    switchTo('List');
-    expect(screen.getByRole('button', { name: 'List' }).getAttribute('aria-pressed')).toBe(
-      'true',
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /show all leads/i }));
-
-    expect(screen.getByRole('button', { name: 'Map' }).getAttribute('aria-pressed')).toBe(
-      'true',
-    );
-    expect(document.querySelector('.pin-list')).toBeNull();
-    expect(window.localStorage.getItem(VIEW_STORAGE_KEY)).toBeNull(); // the stranded view really was cleared
-  });
-
-  // Regression (docs/reviews/unit 7.md F2): "placement is Map-only" was
-  // enforced only by the opaque `.list-pane` covering the map — true in a
-  // real browser, invisible to jsdom (which does no layout/paint), so this
-  // test could never fail if that CSS ever regressed. `handleMapClick` now
-  // checks `activeView` itself, so this is a real guard, not just a
-  // stylesheet.
-  it('does not place a pin when the covered map is clicked while List is showing', () => {
-    seed([]);
-    render(<App />);
-    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
-      target: { value: 'Ghost Lead' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
-    switchTo('List');
-
-    clickMapAt(400, 300); // dispatched straight at .leaflet-container, bypassing the CSS cover
-
-    expect(stored()).toEqual([]);
-    expect(listRows()).toHaveLength(0);
-  });
-
-  // Regression (docs/reviews/unit 7.md F4): aria-hidden alone still left the
-  // covered map's Leaflet controls/markers tabbable — a keyboard user could
-  // reach and activate them invisibly, including a zoom button that silently
-  // rewrites the persisted map view. `inert` (toggled via a ref effect, since
-  // React 18 has no inert JSX prop) blocks that.
-  it('makes the covered map inert while List is showing, and interactive again back on Map', () => {
-    seed([alpha, beta]);
-    render(<App />);
-    const wrapper = () => document.querySelector('.map-pane__map') as HTMLElement;
-    expect(wrapper().hasAttribute('inert')).toBe(false);
-
-    switchTo('List');
-    expect(wrapper().hasAttribute('inert')).toBe(true);
-
-    switchTo('Map');
-    expect(wrapper().hasAttribute('inert')).toBe(false);
 describe('App — Unit 6: sync via a linked data file', () => {
   // `showOpenFilePicker`/`showSaveFilePicker` don't exist in jsdom by
   // default — every other test in this file runs with them absent, which is
@@ -2327,5 +2137,198 @@ describe('App — the localStorage write path stays synchronous (Unit 6 Assumpti
     // have landed yet here and this assertion would fail.
     expect(stored().map((p) => p.name)).toEqual(['Sync Check']);
     expect(markers()).toHaveLength(1);
+  });
+});
+
+describe('App — multi-view navigation (List view)', () => {
+  const gamma: Pin = {
+    id: 'g',
+    name: 'Gamma Tavern',
+    lat: 40.73,
+    lng: -74.03,
+    strength: 'failed',
+    notes: 'Great wine list, shame it closed.',
+  };
+
+  function switchTo(view: 'Map' | 'List') {
+    fireEvent.click(screen.getByRole('button', { name: view }));
+  }
+  function listRows(): HTMLElement[] {
+    return Array.from(document.querySelectorAll('.pin-list__row'));
+  }
+
+  // The headline safety claim: List is layered on top of the map, not
+  // swapped in for it, so a mid-session pan survives a round trip through
+  // List and back — the same DOM node proves MapView itself never unmounted
+  // (a remount would create a brand new Leaflet container and re-fit/re-open
+  // on the persisted view, silently discarding wherever the user had panned
+  // to). Same `captureLeafletMap` + real `setView` technique the filter
+  // suite's "never moves or re-fits the map" test uses.
+  it('layers List over the map without ever unmounting it, so a pan survives the round trip', () => {
+    seed([alpha, beta]);
+    const map = captureLeafletMap(() => render(<App />));
+    expect(markers()).toHaveLength(2);
+    expect(document.querySelector('.pin-list')).toBeNull();
+    const mapNode = document.querySelector('.leaflet-container');
+
+    act(() => {
+      map.setView([48.8566, 2.3522], 9); // Paris — nowhere near the seeded pins
+    });
+    const center = map.getCenter();
+    const zoom = map.getZoom();
+
+    switchTo('List');
+    expect(listRows()).toHaveLength(2);
+    // The map's wrapper is still in the DOM (never unmounted) but out of the
+    // accessibility tree while covered.
+    expect(document.querySelector('.map-pane__map')?.getAttribute('aria-hidden')).toBe(
+      'true',
+    );
+    expect(document.querySelector('.leaflet-container')).toBe(mapNode);
+
+    switchTo('Map');
+    expect(document.querySelector('.pin-list')).toBeNull();
+    expect(document.querySelector('.map-pane__map')?.getAttribute('aria-hidden')).toBe(
+      'false',
+    );
+    // Same node — not a fresh MapContainer — and the pan is exactly as left.
+    expect(document.querySelector('.leaflet-container')).toBe(mapNode);
+    expect(map.getCenter().lat).toBeCloseTo(center.lat);
+    expect(map.getCenter().lng).toBeCloseTo(center.lng);
+    expect(map.getZoom()).toBe(zoom);
+  });
+
+  // Same AND semantics, same "Showing N of M" wording as the map (Unit 7's
+  // "Done when"): List is read over the same `visiblePins` MapView gets, not
+  // a second, independently-filtered copy of the pins.
+  it('respects the active filter/search exactly as the map does', () => {
+    seed([alpha, beta, gamma]); // strong, weak, failed
+    render(<App />);
+    switchTo('List');
+    expect(listRows()).toHaveLength(3);
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Weak' }));
+    expect(listRows()).toHaveLength(2);
+    expect(screen.getByText(/showing 2 of 3 leads/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Weak' })); // back to all 3
+    fireEvent.change(screen.getByRole('searchbox', { name: /search leads/i }), {
+      target: { value: 'wine' },
+    });
+    expect(listRows()).toHaveLength(1); // only gamma mentions wine
+    expect(listRows()[0].textContent).toContain('Gamma Tavern');
+  });
+
+  // Nothing pin-specific is duplicated for the list: clicking a row routes
+  // through the exact same handleSelectPin the map's markers use, opening
+  // the exact same PinEditor.
+  it('clicking a row opens the same PinEditor the map uses, seeded from the clicked pin', () => {
+    seed([alpha, beta]);
+    render(<App />);
+    switchTo('List');
+
+    fireEvent.click(screen.getByText('Beta Grill'));
+
+    expect(screen.getByDisplayValue('Beta Grill')).toBeTruthy();
+    expect(notesBox().value).toBe(beta.notes);
+  });
+
+  it('keeps the selected pin’s editor open across a view switch either way', () => {
+    seed([alpha, beta]);
+    render(<App />);
+    fireEvent.click(markers()[0]); // select alpha via the map
+    expect(screen.getByDisplayValue('Alpha Cafe')).toBeTruthy();
+
+    switchTo('List');
+    expect(screen.getByDisplayValue('Alpha Cafe')).toBeTruthy(); // same pin, still open
+
+    switchTo('Map');
+    expect(screen.getByDisplayValue('Alpha Cafe')).toBeTruthy();
+  });
+
+  // Pure UI/read state, per Unit 7's "Done when": switching views must not
+  // write to storage or disturb a placement the user is mid-way through
+  // arming.
+  it('switching views touches neither storage nor an in-progress add-pin draft', () => {
+    seed([alpha, beta]);
+    render(<App />);
+
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Third Lead' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    expect(screen.getByText(/click the map to place/i)).toBeTruthy();
+    const before = stored();
+
+    switchTo('List');
+    switchTo('Map');
+
+    expect(screen.getByText(/click the map to place “third lead”/i)).toBeTruthy();
+    expect(stored()).toEqual(before);
+  });
+
+  // Regression (docs/reviews/unit 7.md F1): "Show all leads" re-fits and
+  // force-remounts the map, but that entire effect used to be invisible from
+  // List, where nothing on screen changes — a filtered-list user could
+  // silently discard a saved pan with the button they'd click expecting
+  // "clear the filter". It must switch to Map so its effect is observable.
+  it('"Show all leads" switches to Map view, so its effect is actually visible from List', () => {
+    seed([alpha, beta]);
+    window.localStorage.setItem(
+      VIEW_STORAGE_KEY,
+      JSON.stringify({ center: [0, -150], zoom: 5 }), // mid-Pacific, nowhere near the seeded leads
+    );
+    render(<App />);
+    switchTo('List');
+    expect(screen.getByRole('button', { name: 'List' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /show all leads/i }));
+
+    expect(screen.getByRole('button', { name: 'Map' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(document.querySelector('.pin-list')).toBeNull();
+    expect(window.localStorage.getItem(VIEW_STORAGE_KEY)).toBeNull(); // the stranded view really was cleared
+  });
+
+  // Regression (docs/reviews/unit 7.md F2): "placement is Map-only" was
+  // enforced only by the opaque `.list-pane` covering the map — true in a
+  // real browser, invisible to jsdom (which does no layout/paint), so this
+  // test could never fail if that CSS ever regressed. `handleMapClick` now
+  // checks `activeView` itself, so this is a real guard, not just a
+  // stylesheet.
+  it('does not place a pin when the covered map is clicked while List is showing', () => {
+    seed([]);
+    render(<App />);
+    fireEvent.change(screen.getByPlaceholderText(/joe's diner/i), {
+      target: { value: 'Ghost Lead' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /place on map/i }));
+    switchTo('List');
+
+    clickMapAt(400, 300); // dispatched straight at .leaflet-container, bypassing the CSS cover
+
+    expect(stored()).toEqual([]);
+    expect(listRows()).toHaveLength(0);
+  });
+
+  // Regression (docs/reviews/unit 7.md F4): aria-hidden alone still left the
+  // covered map's Leaflet controls/markers tabbable — a keyboard user could
+  // reach and activate them invisibly, including a zoom button that silently
+  // rewrites the persisted map view. `inert` (toggled via a ref effect, since
+  // React 18 has no inert JSX prop) blocks that.
+  it('makes the covered map inert while List is showing, and interactive again back on Map', () => {
+    seed([alpha, beta]);
+    render(<App />);
+    const wrapper = () => document.querySelector('.map-pane__map') as HTMLElement;
+    expect(wrapper().hasAttribute('inert')).toBe(false);
+
+    switchTo('List');
+    expect(wrapper().hasAttribute('inert')).toBe(true);
+
+    switchTo('Map');
+    expect(wrapper().hasAttribute('inert')).toBe(false);
   });
 });
