@@ -109,15 +109,15 @@ export function ImportExport({
         ? 'the saved data (currently unreadable)'
         : `${pending.savedCount} saved ${leadNoun(pending.savedCount)}`;
     return (
-      <div className="import-export import-export--confirm">
-        <p>
+      <div className="panel panel--danger">
+        <p className="panel__text">
           Replace {savedLabel} with the {pending.pins.length}{' '}
           {leadNoun(pending.pins.length)} in “{pending.fileName}”?
         </p>
-        <div className="import-export__actions">
+        <div className="btn-row">
           <button
             type="button"
-            className="import-export__replace"
+            className="btn btn--danger"
             onClick={() => {
               onImport(pending.pins);
               setPending(null);
@@ -127,7 +127,7 @@ export function ImportExport({
           </button>
           <button
             type="button"
-            className="import-export__cancel"
+            className="btn btn--secondary"
             onClick={() => setPending(null)}
           >
             Cancel
@@ -139,15 +139,20 @@ export function ImportExport({
 
   return (
     <div className="import-export">
-      <p className="import-export__title">Backup</p>
-      <div className="import-export__actions">
-        <button type="button" onClick={handleExport}>
+      <p className="overline">Backup</p>
+      <div className="btn-row">
+        <button type="button" className="btn btn--secondary" onClick={handleExport}>
           Export as JSON
         </button>
       </div>
-      <label className="import-export__file">
-        <span>Import from JSON — replaces every saved lead</span>
-        <input type="file" accept="application/json,.json" onChange={handleFileSelected} />
+      <label className="field">
+        <span className="field__label">Import from JSON — replaces every saved lead</span>
+        <input
+          type="file"
+          className="field__file"
+          accept="application/json,.json"
+          onChange={handleFileSelected}
+        />
       </label>
       {error && (
         <p className="import-export__error" role="alert">

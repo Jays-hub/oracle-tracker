@@ -9,6 +9,158 @@ name the artifacts + the verified test count so the drift check has something re
 
 ---
 
+## 2026-08-13 — [reviewed] [fixed] Unit 8: Visual redesign — review closed
+
+[reviewed] Cold-context adversarial review: `docs/reviews/unit 8.md`, shasum `ced41438…`. **Verdict: Yes,
+with fixes.** 2 MAJOR + 5 MINOR + 1 NIT, no BLOCKER. The reviewer ran the whole gate itself, built to a
+scratch dir and drove **headless Chrome over CDP** against the production build: it read the strength
+colours off the painted DOM in all four places they render, swept every rendered text node for contrast
+(zero failures in the chrome), measured the Unit 3A floor at 500x400 and 360x300, and re-planted 8
+violations against `styles.test.ts`.
+
+Its central result: **the builder's own three sampled plants fired correctly, but four holes of the
+reviewer's passed silently.** The guards were checking the stylesheet's *grammar*, and in four places
+they were checking a spelling rather than the thing. The main thread reproduced all four against the
+real repo before accepting them.
+
+**Process note worth keeping:** this review took three attempts. The first died when the machine slept
+mid-response, the second on an account spend limit — both *after* the analysis was done and *before*
+anything was written, so both lost everything. The third was resumed from the same agent's transcript
+with instructions to **write the artifact first and probe afterwards**. `.claude/rules/00-process.md`
+says the review closes on a durable artifact; nothing enforced that the artifact gets written before the
+expensive work, and twice it cost a full review. Write-then-verify is the ordering that survives.
+
+[fixed] All 8 findings landed:
+
+1. **MAJOR (F1) — a shared primitive positioned itself.** `.link-button` was extracted from
+   `.pin-filter__clear` carrying `align-self: flex-start`, which in that column meant "don't stretch";
+   reused in `.sidebar__controls` — a centred row — it meant "sit at the top" and silently beat
+   `align-items: center`, leaving "Show all leads" 8px high. Measured by the reviewer at `y:82` where
+   centred is `y:90`. The primitive now carries no alignment; a `.link-button--start` modifier does, and
+   `PinFilterBar` opts in. **Re-measured in headless Chrome: link `y:90`, switcher and link both `cy:98`
+   — exactly the reviewer's predicted correct value.** This is the one defect 154 green tests could not
+   see, and the fix is the reason for the new guard below.
+2. **MAJOR (F2) — the strength-palette guard banned a notation, not a colour.** `rgb(214, 69, 69)` is the
+   failed-lead red and the hex grep never saw it; and the "never a fill" check iterated four hardcoded
+   names, so a *new* swatch class was unguarded — `background-image` paints over the inline
+   `background-color` with no `!important` needed. Now every colour literal in the sheet is normalised to
+   `#rrggbb` before comparing (covers `#rgb`, `#rrggbb`, `rgb()`, `rgba()`), and the fill ban matches
+   selectors by `swatch|marker` **pattern**, with a floor assertion so it fails rather than policing an
+   empty set if those classes are ever renamed.
+3. **MINOR (F3) — the sheet broke its own written rule.** The `--disabled-surface` comment says disabled
+   is signalled by "the flat fill, **the missing border** and the not-allowed cursor"; `.btn:disabled`
+   cleared its border but `.field__control:disabled` did not, leaving a `--line-control` edge at
+   **2.88:1**, under this sheet's own 3:1 boundary bar. Added `border-color: transparent`, plus a test
+   asserting *both* disabled rules drop their border. **Verified in Chrome: the disabled `<select>` now
+   computes `rgba(0, 0, 0, 0)` on a `--disabled-surface` fill, label at 4.78:1.**
+4. **MINOR (F4) — "sizes space from tokens" accepted any token.** `margin: var(--sidebar-width)` — a
+   320px margin — passed. Each property family is now pinned to its own scale: `font-size` to
+   `--text-*`, spacing to `--space-N`.
+5. **MINOR (F5) — three tokens declared and never applied** (`--text-xl`, `--space-8`, `--radius-lg`),
+   one of them pinned by a test that therefore guarded nothing. Deleted, and a new check fails on **any**
+   token declared without a `var()` use, so the scale stays a scale in use rather than on paper.
+6. **MINOR (F6) — `.overline` didn't replace the copies it was built to replace.** `.pin-filter__legend`
+   and `.pin-list__strength` re-declared the same five properties. Both now compose the primitive in
+   markup (the pattern `PinList` already used for `swatch pin-list__swatch`), keeping only what is
+   context-specific. **Verified in Chrome: all three render byte-identical typography.**
+7. **MINOR (F7) — the Legend was the only sidebar block with no visible title**, and the redesign had
+   just drawn a hairline box around it directly beneath the filter's identical Strong/Weak/Failed list.
+   Added a "Lead strength" overline. Six of seven blocks now title themselves; the seventh is the status
+   line, correctly untitled.
+8. **NIT (F8)** — `DataFileLink`'s props left under-indented by the wrapper insertion. Fixed. (No
+   formatter in the toolchain catches this; noted, not solved.)
+
+**New guard, beyond the findings.** F1 was a *class* of bug, not an instance: a primitive that places
+itself works in the container it was born in and silently fights every other one. `styles.test.ts` now
+asserts that shared primitives declare no placement property (`align-self`, `justify-self`, `order`,
+`position`, `float`, `inset`/`top`/`right`/`bottom`/`left`) — sizing like `flex: 0 0 auto` stays legal,
+and modifiers are exempt, because opting in is the supported route. **Self-proving: re-planting
+`align-self: flex-start` on `.link-button` — the exact declaration that shipped — now fails it.**
+
+**Self-proving overall — 6 re-plants after the fixes**, each failing exactly the guard written for it and
+green again on revert: the failed-lead red as `rgb()`, a new swatch class painting `background-image`,
+`margin: var(--sidebar-width)`, a disabled control keeping its border, an unused token, and F1's own
+`align-self`. All four of the reviewer's silent holes now fail.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean · `npm test` **422 passed** (17 files; was 416
+— `styles.test.ts` 154 → 160) · `npm run build` succeeds. **Strength mapping re-confirmed on the painted
+DOM after all this churn**: `rgb(46,158,79)` / `rgb(232,163,61)` / `rgb(214,69,69)` against Strong / Weak
+/ Failed in both the list and the legend.
+
+**Still not verified by the reviewer** (its own "what I could not verify", recorded rather than papered
+over): Unit 7 F4 (`inert`), the Map→List→Map `.leaflet-container` node identity, the armed crosshair, and
+"console clean" remain the builder's claims — the reviewer did not reproduce them, and its
+`elementFromPoint` probe for Unit 7 F3 hit the wrong corner of the list pane, so it treats F3 as
+unverified too. It also never looked at a screenshot: *"'Cohesive' and 'clean/minimal' are the user's
+call, not mine."* That judgement is still outstanding.
+
+**Unit 8 is done and mergeable.**
+
+Next: nothing scoped — the roadmap's units are all built and the "Later" list is empty. Scope a new unit,
+or merge this branch.
+
+---
+
+## 2026-08-13 — [built] Unit 8: Visual redesign
+
+[built] A design-token pass over every surface that exists: type scale, 4px spacing grid, radius scale
+and a warm neutral palette in `:root`, applied through shared primitives (`.btn` + variants, `.field`,
+`.panel`, `.overline`, `.swatch`, `.link-button`, `.sidebar__block`) that replace the per-component
+copies four components had each invented separately. `src/index.css` rewritten; the seven sidebar
+components and `App.tsx`'s sidebar grouping changed **class attributes and wrapper divs only** — no
+props, state, handlers, copy or control order moved. Decision log: `docs/build_notes/unit 8.md`.
+
+**Two real AA failures were already shipping and are fixed**: white on the destructive `#d64545`
+(4.38:1, on import Replace and delete-confirm since Unit 3B) and white on the disabled `#b9c3d6`
+(1.8:1). Destructive *chrome* is now `#a3282a` (7.3:1) — deliberately a different file from the pin
+red, which is untouched.
+
+[built] **New: `src/styles.test.ts` (154 tests)** — the mechanism, since jsdom renders no CSS and
+"we applied a scale and met AA" decays silently otherwise. Reads `index.css` as text (the idiom
+`mapFit.test.ts` established) and asserts: the scales hold (whole-pixel type steps, `--space-N` = N x
+4px); every foreground/background pair in use clears WCAG AA, with the contrast function itself pinned
+to the three reference values because a broken one fails *open*; **no strength hex and no `!important`
+in the stylesheet**, so the pin palette can only come from `colorForStrength`; **every selector is a
+single class** (6-entry documented allowlist) — the roadmap's named hazard, killed by construction
+rather than patched instance by instance; a modifier is declared after its base, and **a state selector
+never silently outranks a modifier**; every size is a token, every `var()` resolves, no rule suppresses
+an outline, every interactive class has a `:focus-visible` ring, transitions animate only colour and
+shadow (which is what lets the sheet carry no `prefers-reduced-motion` block honestly).
+
+**Self-proving — 9 planted violations, each reverted**: re-adding `.import-export button`; `--danger`
+set to the failed-lead red; a raw `19px` padding; a deleted `.btn:focus-visible`; a transitioned
+`transform`; `.btn--primary` declared before `.btn`; a typo'd `var(--ink-mutd)`; an `outline: none`;
+and a removed `.pin-list__row--selected:hover`. Each fails exactly the test written for it (the
+`--danger` one fails four); green again after each revert.
+
+**The in-browser check found two defects the tests could not**, both in code written for this unit:
+`.pin-list__row:hover` (0,2,0) silently beat `.pin-list__row--selected` (0,1,0), so hovering the open
+pin's row dropped its selected tint — the state-vs-modifier guard above was written because of it and
+reproduces it on removal; and a contrast sweep that measures *what is actually painted* (every text
+node against its real effective background, not against the enumerated token pairs) caught disabled
+control text at 3.95:1. WCAG exempts inactive controls; the exemption is deliberately not taken —
+disabled labels now use `--ink-muted` at 4.8:1. That sweep is clean across four UI states (27–49 text
+elements each). Also re-verified in Chrome now the CSS under them was rewritten: Unit 7 F3
+(`elementFromPoint` over Leaflet's zoom control returns a list row), F4 (`inert` set while covered,
+cleared on return), F1 ("Show all leads" from List switches to Map), the Map→List→Map round trip
+preserving `.leaflet-container` node identity, the armed crosshair, and Unit 3A's 240px floors as
+computed values. Console clean.
+
+Verified: `npm run typecheck` clean · `npm run lint` clean · `npm test` **416 passed** (17 files; was
+262 in 16 — the 154 new ones are `styles.test.ts`, and no existing test was modified or deleted) ·
+`npm run build` succeeds.
+
+Deferred and flagged rather than assumed: dark mode (roadmap parks it; the reader in `styles.test.ts`
+assumes no at-rules, so it is not free); the Legend duplicating the filter's own colour checkboxes (an
+IA question, not a styling one); narrow-viewport layout (unchanged). Least confident: the single-class
+rule as a long-term constraint against a third-party widget's CSS, and the six sidebar wrapper `<div>`s
+— the one non-cosmetic change in `App.tsx`, and the part the new guards cannot see, since they read CSS
+and know nothing about markup.
+
+Next: `/review unit 8`.
+
+---
+
 ## 2026-08-12 — [fixed] `main` was merged broken: repairing the Unit 6B → Unit 7 merge
 
 [fixed] **PR #14 (Unit 7) merged a tree that had not compiled since 2026-08-10, and `main`'s HEAD

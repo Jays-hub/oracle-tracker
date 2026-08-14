@@ -29,10 +29,11 @@ export function AddPinForm({
     >
       <h2 className="add-pin__title">Add a restaurant</h2>
 
-      <label className="add-pin__field">
-        <span>Name</span>
+      <label className="field">
+        <span className="field__label">Name</span>
         <input
           type="text"
+          className="field__control"
           value={name}
           placeholder="e.g. Joe's Diner"
           onChange={(e) => onNameChange(e.target.value)}
@@ -40,9 +41,10 @@ export function AddPinForm({
         />
       </label>
 
-      <label className="add-pin__field">
-        <span>Lead strength</span>
+      <label className="field">
+        <span className="field__label">Lead strength</span>
         <select
+          className="field__control"
           value={strength}
           onChange={(e) => onStrengthChange(e.target.value as LeadStrength)}
           disabled={armed}
@@ -56,14 +58,14 @@ export function AddPinForm({
       </label>
 
       {armed ? (
-        <div className="add-pin__armed">
-          <p>Click the map to place “{name.trim()}”.</p>
-          <button type="button" onClick={onCancel}>
+        <div className="panel panel--accent">
+          <p className="panel__text">Click the map to place “{name.trim()}”.</p>
+          <button type="button" className="btn btn--secondary" onClick={onCancel}>
             Cancel
           </button>
         </div>
       ) : (
-        <button type="submit" disabled={!canArm}>
+        <button type="submit" className="btn btn--primary" disabled={!canArm}>
           Place on map…
         </button>
       )}

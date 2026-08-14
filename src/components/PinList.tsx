@@ -64,12 +64,14 @@ export function PinList({
               onClick={() => onSelectPin(pin.id)}
             >
               <span
-                className="pin-list__swatch"
+                className="swatch pin-list__swatch"
                 style={{ background: colorForStrength(pin.strength) }}
                 aria-hidden="true"
               />
               <span className="pin-list__name">{pin.name}</span>
-              <span className="pin-list__strength">{STRENGTH_LABELS[pin.strength]}</span>
+              <span className="overline pin-list__strength">
+                {STRENGTH_LABELS[pin.strength]}
+              </span>
               <span className="pin-list__notes">
                 {preview === '' ? (
                   <span className="pin-list__notes--empty">No notes yet</span>

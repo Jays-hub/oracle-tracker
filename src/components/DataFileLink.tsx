@@ -56,7 +56,7 @@ export function DataFileLink({
 }) {
   return (
     <div className="data-file-link">
-      <p className="data-file-link__title">Sync via file</p>
+      <p className="overline">Sync via file</p>
 
       {error && (
         <p className="data-file-link__error" role="alert">
@@ -65,19 +65,19 @@ export function DataFileLink({
       )}
 
       {pendingLink ? (
-        <div className="data-file-link__confirm">
-          <p>
+        <div className="panel panel--accent">
+          <p className="panel__text">
             Link “{pendingLink.fileName}”, replacing{' '}
             {pendingLink.savedCount === null
               ? 'the currently shown data (unreadable)'
               : `${pendingLink.savedCount} currently shown ${leadNoun(pendingLink.savedCount)}`}{' '}
             with the {pendingLink.importCount} {leadNoun(pendingLink.importCount)} in that file?
           </p>
-          <div className="data-file-link__actions">
-            <button type="button" className="data-file-link__replace" onClick={onConfirmLink}>
+          <div className="btn-row">
+            <button type="button" className="btn btn--primary" onClick={onConfirmLink}>
               Link file
             </button>
-            <button type="button" className="data-file-link__cancel" onClick={onCancelLink}>
+            <button type="button" className="btn btn--secondary" onClick={onCancelLink}>
               Cancel
             </button>
           </div>
@@ -92,13 +92,13 @@ export function DataFileLink({
             Linked to “{linkedFileName}”. Every read and write goes through this file — commit
             and push it to sync from another device.
           </p>
-          <button type="button" className="data-file-link__unlink" onClick={onUnlink}>
+          <button type="button" className="btn btn--secondary" onClick={onUnlink}>
             Unlink
           </button>
         </div>
       ) : reconnectFileName ? (
-        <div className="data-file-link__reconnect">
-          <p>
+        <div className="panel panel--accent">
+          <p className="panel__text">
             This browser was linked to “{reconnectFileName}”. Reconnecting asks the browser
             for permission — its prompt opens at the top of the window, outside the page.
           </p>
@@ -108,21 +108,26 @@ export function DataFileLink({
               Reconnect as the sole control, and it can only ever fail. Same handler
               the linked state's Unlink uses — forget the handle, fall back to
               browser storage, which restores the controls below. */}
-          <div className="data-file-link__actions">
-            <button type="button" onClick={onReconnect} disabled={reconnectPending}>
+          <div className="btn-row">
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={onReconnect}
+              disabled={reconnectPending}
+            >
               {reconnectPending ? 'Waiting for permission…' : 'Reconnect'}
             </button>
-            <button type="button" className="data-file-link__unlink" onClick={onUnlink}>
+            <button type="button" className="btn btn--secondary" onClick={onUnlink}>
               Forget this file
             </button>
           </div>
         </div>
       ) : (
-        <div className="data-file-link__actions">
-          <button type="button" onClick={onChooseExisting}>
+        <div className="btn-row">
+          <button type="button" className="btn btn--secondary" onClick={onChooseExisting}>
             Choose existing file…
           </button>
-          <button type="button" onClick={onCreateNew}>
+          <button type="button" className="btn btn--secondary" onClick={onCreateNew}>
             Create new file…
           </button>
         </div>
