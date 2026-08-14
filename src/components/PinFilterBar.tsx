@@ -23,23 +23,24 @@ export function PinFilterBar({
     <div className="pin-filter">
       <input
         type="search"
-        className="pin-filter__search"
+        className="field__control"
         aria-label="Search leads by name or notes"
         placeholder="Search name or notes…"
         value={filter.query}
         onChange={(e) => onQueryChange(e.target.value)}
       />
       <fieldset className="pin-filter__strengths">
-        <legend className="pin-filter__legend">Show</legend>
+        <legend className="overline pin-filter__legend">Show</legend>
         {LEAD_STRENGTHS.map((s) => (
           <label key={s} className="pin-filter__strength">
             <input
               type="checkbox"
+              className="pin-filter__checkbox"
               checked={filter.strengths.has(s)}
               onChange={() => onToggleStrength(s)}
             />
             <span
-              className="pin-filter__swatch"
+              className="swatch"
               style={{ background: colorForStrength(s) }}
             />
             {STRENGTH_LABELS[s]}
@@ -47,7 +48,11 @@ export function PinFilterBar({
         ))}
       </fieldset>
       {isActive && (
-        <button type="button" className="pin-filter__clear" onClick={onClear}>
+        <button
+          type="button"
+          className="link-button link-button--start"
+          onClick={onClear}
+        >
           Clear filters
         </button>
       )}

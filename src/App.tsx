@@ -1170,129 +1170,150 @@ export default function App() {
   return (
     <div className="app">
       <aside className="sidebar">
-        <h1 className="sidebar__brand">restaurant-map</h1>
-        <p className="sidebar__tagline">Your restaurant leads, by strength.</p>
+        {/* The sidebar is a stack of `.sidebar__block` sections, each carrying
+            its own padding and closing hairline — the rules run edge to edge
+            that way instead of floating inside a gutter. Purely presentational:
+            the order of the controls inside it is unchanged. */}
+        <div className="sidebar__block">
+          <h1 className="sidebar__brand">restaurant-map</h1>
+          <p className="sidebar__tagline">Your restaurant leads, by strength.</p>
 
-        <ViewSwitcher view={activeView} onChange={setActiveView} />
+          <div className="sidebar__controls">
+            <ViewSwitcher view={activeView} onChange={setActiveView} />
 
-        {/* Always visible, not gated behind any other state: this is the only
-            way back once a saved pan/zoom has left every lead off screen, so
-            it can't be one click behind an editor, a filter, or a banner. */}
-        <button type="button" className="sidebar__show-all" onClick={handleShowAllLeads}>
-          Show all leads
-        </button>
-
-        {loadError && (
-          <div className="banner banner--error" role="alert">
-            {describeLoadError()}
-          </div>
-        )}
-
-        {saveError && (
-          <div className="banner banner--error" role="alert">
-            {saveError}
-          </div>
-        )}
-
-        {importInfo && (
-          <div className="banner banner--info" role="status">
-            {importInfo}
-          </div>
-        )}
-
-        {deleteInfo && (
-          <div className="banner banner--info" role="status">
-            Deleted “{deleteInfo.pin.name}”.{' '}
-            <button type="button" className="banner__undo" onClick={handleUndoDelete}>
-              Undo
+            {/* Always visible, not gated behind any other state: this is the
+                only way back once a saved pan/zoom has left every lead off
+                screen, so it can't be one click behind an editor, a filter,
+                or a banner. */}
+            <button type="button" className="link-button" onClick={handleShowAllLeads}>
+              Show all leads
             </button>
           </div>
-        )}
+        </div>
 
-        <PinFilterBar
-          filter={filter}
-          isActive={filterActive}
-          onToggleStrength={handleToggleStrength}
-          onQueryChange={handleQueryChange}
-          onClear={handleClearFilter}
-        />
+        <div className="sidebar__block stack">
+          {loadError && (
+            <div className="banner banner--error" role="alert">
+              {describeLoadError()}
+            </div>
+          )}
 
-        {selectedPin ? (
-          // key={id}: switching pins remounts the editor so its draft is
-          // re-seeded from the newly selected pin instead of carrying over.
-          <PinEditor
-            key={selectedPin.id}
-            pin={selectedPin}
-            onSave={handleSaveEdits}
-            onClose={() => setSelectedPinId(null)}
-            onDelete={handleDeletePin}
+          {saveError && (
+            <div className="banner banner--error" role="alert">
+              {saveError}
+            </div>
+          )}
+
+          {importInfo && (
+            <div className="banner banner--info" role="status">
+              {importInfo}
+            </div>
+          )}
+
+          {deleteInfo && (
+            <div className="banner banner--info" role="status">
+              Deleted “{deleteInfo.pin.name}”.{' '}
+              <button type="button" className="banner__undo" onClick={handleUndoDelete}>
+                Undo
+              </button>
+            </div>
+          )}
+
+          <PinFilterBar
+            filter={filter}
+            isActive={filterActive}
+            onToggleStrength={handleToggleStrength}
+            onQueryChange={handleQueryChange}
+            onClear={handleClearFilter}
           />
-        ) : (
-          <AddPinForm
-            name={name}
-            strength={strength}
-            armed={armed}
-            onNameChange={setName}
-            onStrengthChange={setStrength}
-            onArm={() => setArmed(true)}
-            onCancel={() => setArmed(false)}
-          />
-        )}
+        </div>
 
-        <Legend />
+        <div className="sidebar__block">
+          {selectedPin ? (
+            // key={id}: switching pins remounts the editor so its draft is
+            // re-seeded from the newly selected pin instead of carrying over.
+            <PinEditor
+              key={selectedPin.id}
+              pin={selectedPin}
+              onSave={handleSaveEdits}
+              onClose={() => setSelectedPinId(null)}
+              onDelete={handleDeletePin}
+            />
+          ) : (
+            <AddPinForm
+              name={name}
+              strength={strength}
+              armed={armed}
+              onNameChange={setName}
+              onStrengthChange={setStrength}
+              onArm={() => setArmed(true)}
+              onCancel={() => setArmed(false)}
+            />
+          )}
+        </div>
 
-        <DataFileLink
-          supported={isFileSystemAccessSupported()}
-          linkedFileName={linkedHandle?.name ?? null}
-          reconnectFileName={reconnectHandle?.name ?? null}
-          pendingLink={
-            pendingFileLink && {
-              fileName: pendingFileLink.fileName,
-              savedCount: pendingFileLink.savedCount,
-              importCount: pendingFileLink.pins.length,
+        <div className="sidebar__block">
+          <Legend />
+        </div>
+
+        <div className="sidebar__block">
+          <DataFileLink
+            supported={isFileSystemAccessSupported()}
+            linkedFileName={linkedHandle?.name ?? null}
+            reconnectFileName={reconnectHandle?.name ?? null}
+            pendingLink={
+              pendingFileLink && {
+                fileName: pendingFileLink.fileName,
+                savedCount: pendingFileLink.savedCount,
+                importCount: pendingFileLink.pins.length,
+              }
             }
-          }
-          error={fileLinkError}
-          reconnectPending={reconnectPending}
-          onChooseExisting={handleChooseExisting}
-          onCreateNew={handleCreateNew}
-          onReconnect={handleReconnect}
-          onConfirmLink={handleConfirmFileLink}
-          onCancelLink={handleCancelFileLink}
-          onUnlink={handleUnlink}
-        />
+            error={fileLinkError}
+            reconnectPending={reconnectPending}
+            onChooseExisting={handleChooseExisting}
+            onCreateNew={handleCreateNew}
+            onReconnect={handleReconnect}
+            onConfirmLink={handleConfirmFileLink}
+            onCancelLink={handleCancelFileLink}
+            onUnlink={handleUnlink}
+          />
+        </div>
 
-        <ImportExport
-          getSavedCount={countStoredPins}
-          getPinsForExport={pinsForExport}
-          onImport={handleImportReplace}
-        />
+        <div className="sidebar__block">
+          <ImportExport
+            getSavedCount={countStoredPins}
+            getPinsForExport={pinsForExport}
+            onImport={handleImportReplace}
+          />
+        </div>
 
-        {/* aria-live (not role="status"): the import/delete banners already
-            claim the sole "status" role elsewhere in the sidebar, and
-            getByRole('status') in tests expects exactly one match. A live
-            region without that role still announces filter changes to
-            screen-reader users (see docs/reviews/filter-search-leads.md F6)
-            without colliding with those banner queries. */}
-        <p className="sidebar__count" aria-live="polite">
-          {filterActive ? (
-            visiblePins.length === 0 ? (
-              <>No leads match your filters.</>
+        <div className="sidebar__block sidebar__block--last">
+          {/* aria-live (not role="status"): the import/delete banners already
+              claim the sole "status" role elsewhere in the sidebar, and
+              getByRole('status') in tests expects exactly one match. A live
+              region without that role still announces filter changes to
+              screen-reader users (see docs/reviews/filter-search-leads.md F6)
+              without colliding with those banner queries. */}
+          <p className="sidebar__count" aria-live="polite">
+            {filterActive ? (
+              visiblePins.length === 0 ? (
+                <>No leads match your filters.</>
+              ) : (
+                <>
+                  Showing {visiblePins.length} of {pins.length} {leadNoun(pins.length)}
+                  {!selectedPin && <> · click a pin to read or edit its notes</>}
+                </>
+              )
             ) : (
               <>
-                Showing {visiblePins.length} of {pins.length} {leadNoun(pins.length)}
-                {!selectedPin && <> · click a pin to read or edit its notes</>}
+                {pins.length} {leadNoun(pins.length)} on the map
+                {pins.length > 0 && !selectedPin && (
+                  <> · click a pin to read or edit its notes</>
+                )}
               </>
-            )
-          ) : (
-            <>
-              {pins.length} {leadNoun(pins.length)} on the map
-              {pins.length > 0 && !selectedPin && (
-                <> · click a pin to read or edit its notes</>
-              )}
-            </>
-          )}
-        </p>
+            )}
+          </p>
+        </div>
       </aside>
 
       {/* The armed cursor is set here rather than on MapContainer, which

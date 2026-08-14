@@ -55,20 +55,26 @@ export function PinEditor({
     >
       <h2 className="pin-editor__title">
         <span
-          className="pin-editor__swatch"
+          className="swatch"
           style={{ background: colorForStrength(pin.strength) }}
         />
         Edit lead
       </h2>
 
-      <label className="pin-editor__field">
-        <span>Name</span>
-        <input type="text" value={name} onChange={(e) => setName(e.target.value)} />
+      <label className="field">
+        <span className="field__label">Name</span>
+        <input
+          type="text"
+          className="field__control"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
       </label>
 
-      <label className="pin-editor__field">
-        <span>Lead strength</span>
+      <label className="field">
+        <span className="field__label">Lead strength</span>
         <select
+          className="field__control"
           value={strength}
           onChange={(e) => setStrength(e.target.value as LeadStrength)}
         >
@@ -80,24 +86,25 @@ export function PinEditor({
         </select>
       </label>
 
-      <label className="pin-editor__field">
-        <span>Notes</span>
+      <label className="field">
+        <span className="field__label">Notes</span>
         <textarea
+          className="field__control pin-editor__notes"
           value={notes}
           placeholder="What happened on the visit? Who did you talk to?"
           onChange={(e) => setNotes(e.target.value)}
         />
       </label>
 
-      <div className="pin-editor__actions">
-        <button type="submit" disabled={!canSave}>
+      <div className="btn-row">
+        <button type="submit" className="btn btn--primary" disabled={!canSave}>
           Save changes
         </button>
         {/* Closing discards the draft, so the label has to say so while there
             is something to lose. "Done" read as a commit verb sitting next to
             Save — the one place a user could throw away typed notes thinking
             they had kept them. */}
-        <button type="button" className="pin-editor__close" onClick={onClose}>
+        <button type="button" className="btn btn--secondary" onClick={onClose}>
           {dirty ? 'Discard changes' : 'Close'}
         </button>
       </div>
@@ -119,19 +126,21 @@ export function PinEditor({
       </p>
 
       {confirmingDelete ? (
-        <div className="pin-editor__confirm-delete">
-          <p>Delete “{pin.name}”? You’ll get a chance to undo right after.</p>
-          <div className="pin-editor__actions">
+        <div className="panel panel--danger">
+          <p className="panel__text">
+            Delete “{pin.name}”? You’ll get a chance to undo right after.
+          </p>
+          <div className="btn-row">
             <button
               type="button"
-              className="pin-editor__delete-confirm"
+              className="btn btn--danger"
               onClick={() => onDelete(pin.id)}
             >
               Delete lead
             </button>
             <button
               type="button"
-              className="pin-editor__cancel-delete"
+              className="btn btn--secondary"
               onClick={() => setConfirmingDelete(false)}
             >
               Cancel
@@ -141,7 +150,7 @@ export function PinEditor({
       ) : (
         <button
           type="button"
-          className="pin-editor__delete"
+          className="btn btn--danger-quiet"
           onClick={() => setConfirmingDelete(true)}
         >
           Delete lead
